@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Date>2026-03-19T18:00:00</Date>
+    <Author>DESKTOP-PR5V2H2\gbongk</Author>
+    <URI>\Supervisor</URI>
+  </RegistrationInfo>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-21-147752886-3970807738-2182263286-1001</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+  </Settings>
+  <Triggers>
+    <!-- 부팅 시 자동 시작 -->
+    <BootTrigger>
+      <StartBoundary>2026-03-19T00:00:00</StartBoundary>
+      <Delay>PT30S</Delay>
+    </BootTrigger>
+  </Triggers>
+  <Actions Context="Author">
+    <Exec>
+      <Command>C:\Program Files\Python311\python.exe</Command>
+      <Arguments>D:\workspace\supervisor\supervisor-wrapper.py</Arguments>
+      <WorkingDirectory>D:\workspace\supervisor</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
