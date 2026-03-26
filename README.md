@@ -8,10 +8,23 @@
 
 Keep Claude Code working on your projects while you're away from your desk — monitor progress, send instructions, and manage multiple sessions from your phone.
 
+## How it Works
+
+TeleClaw uses the [Claude Code SDK](https://www.npmjs.com/package/@anthropic-ai/claude-code) to spawn and manage Claude Code as subprocesses. Each project gets its own long-lived SDK session with preserved context — so Claude remembers what it was working on across messages.
+
+```
+You (Telegram) → TeleClaw → Claude Code SDK → Claude Code subprocess
+                                ↑ streaming events (text, tool_use, result)
+                    TeleClaw ←──┘ editMessage back to Telegram in real-time
+```
+
+No hooks or plugins required — TeleClaw receives all events directly through the SDK streaming API.
+
 ## Features
 
 - **Telegram remote control** — Send messages to Claude Code, see live-streamed responses
 - **Multi-session management** — Run multiple projects simultaneously with independent bots
+- **Persistent sessions** — Context preserved across messages via Claude Code SDK
 - **Auto-recovery** — DEAD/STUCK detection with 3-stage restart + auto-resume
 - **Dual watchdog** — Process-level wrapper (exponential backoff) + async health check loop
 - **Live streaming** — 3-second buffered editMessage for real-time response updates
