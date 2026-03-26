@@ -15,7 +15,7 @@ Keep Claude Code working on your projects while you're away from your desk — m
 - **Auto-recovery** — DEAD/STUCK detection with 3-stage restart + auto-resume
 - **Dual watchdog** — Process-level wrapper (exponential backoff) + async health check loop
 - **Live streaming** — 3-second buffered editMessage for real-time response updates
-- **Tool relay** — See which files Claude reads/edits in real-time via Telegram
+- **Tool tracking** — See which files Claude reads/edits in real-time via Telegram
 - **i18n** — Korean and English UI (`lang: "en"` in config)
 - **Cross-platform** — Windows, Linux, macOS
 - **System service** — `teleclaw install` for systemd (Linux) or Task Scheduler (Windows)
@@ -216,9 +216,6 @@ teleclaw/
 |   +-- usage_fmt.py         # Usage formatting
 |   +-- logging_utils.py     # Logging utils
 +-- teleclaw-wrapper.py      # Auto-restart wrapper
-+-- relay-stop.py            # Stop hook (response -> Telegram)
-+-- relay-tool-use.py        # PostToolUse hook (tool use -> Telegram)
-+-- relay_common.py          # Hook shared utils
 +-- svctl.py                 # CLI tool
 +-- send_telegram.py         # CLI photo/file sender
 +-- config.example.yaml      # Config template
