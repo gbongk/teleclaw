@@ -1,4 +1,4 @@
-"""python -m hub 지원"""
+"""python -m src 지원"""
 
 from . import main
 

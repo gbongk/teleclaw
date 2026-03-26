@@ -33,8 +33,8 @@ LOG_FILE = LOGS_DIR / "teleclaw.log"
 if str(SUPERVISOR_DIR) not in sys.path:
     sys.path.insert(0, str(SUPERVISOR_DIR))
 
-from hub.messages import msg
-from hub.config import PROJECTS
+from src.messages import msg
+from src.config import PROJECTS
 
 SESSION_NAMES = list(PROJECTS.keys())
 CWD_MAP = {}
@@ -268,7 +268,7 @@ def cmd_pause(arg):
     pi = all_procs["sessions"].get(name)
     if pi and pi.get("pid"):
         try:
-            from hub.process_utils import kill_pid
+            from src.process_utils import kill_pid
             kill_pid(pi["pid"])
             print(msg("svctl_paused", name=name, pid=pi['pid']))
         except Exception:
@@ -316,7 +316,7 @@ def cmd_usage():
 
     from datetime import datetime, timezone
 
-    from hub.usage_fmt import usage_bar as _bar, reset_str as _reset_str
+    from src.usage_fmt import usage_bar as _bar, reset_str as _reset_str
 
     five = data.get("five_hour", {})
     seven = data.get("seven_day", {})

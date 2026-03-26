@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from hub.telegram_api import (
+from src.telegram_api import (
     _clean_text, _escape_html, _convert_table_to_list,
     _md_to_telegram_html, _split_message,
 )

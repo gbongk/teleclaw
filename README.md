@@ -222,27 +222,26 @@ The bot token is auto-matched based on your current working directory and `confi
 
 ```
 teleclaw/
-+-- hub/                     # Main package
-|   +-- teleclaw.py          # TeleClaw class (core)
-|   +-- telegram_api.py      # Telegram API (sync/async, text/photo/file)
-|   +-- channel.py           # Abstract channel interface
-|   +-- channel_telegram.py  # Telegram channel implementation
-|   +-- commands.py          # Command handlers
-|   +-- messages.py          # i18n messages (ko/en)
-|   +-- session.py           # SessionState dataclass
-|   +-- config.py            # config.yaml loader
-|   +-- state_db.py          # SQLite state management
-|   +-- service.py           # systemd / Task Scheduler support
-|   +-- process_utils.py     # Cross-platform process utils
-|   +-- usage_fmt.py         # Usage formatting
-|   +-- logging_utils.py     # Logging utils
-+-- teleclaw-wrapper.py      # Auto-restart wrapper
-+-- svctl.py                 # CLI tool
-+-- telegram_helper.py       # CLI: send text/photo/file to Telegram
-+-- config.example.yaml      # Config template
-+-- pyproject.toml            # Package metadata
-+-- Makefile                  # Dev commands
-+-- LICENSE                   # MIT
++-- src/                      # Main package
+|   +-- teleclaw.py           # TeleClaw class (core)
+|   +-- telegram_api.py       # Telegram API (sync/async, text/photo/file)
+|   +-- channel.py            # Abstract channel interface
+|   +-- channel_telegram.py   # Telegram channel implementation
+|   +-- commands.py           # Command handlers
+|   +-- messages.py           # i18n messages (ko/en)
+|   +-- session.py            # SessionState dataclass
+|   +-- config.py             # config.yaml loader
+|   +-- state_db.py           # SQLite state management
+|   +-- service.py            # systemd / Task Scheduler support
+|   +-- process_utils.py      # Cross-platform process utils
+|   +-- usage_fmt.py          # Usage formatting
+|   +-- logging_utils.py      # Logging utils
++-- teleclaw-wrapper.py       # Auto-restart wrapper
++-- svctl.py                  # CLI tool
++-- telegram_helper.py        # CLI: send text/photo/file to Telegram
++-- config.example.yaml       # Config template
++-- pyproject.toml             # Package metadata
++-- LICENSE                    # MIT
 ```
 
 ## Support

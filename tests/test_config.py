@@ -1,6 +1,6 @@
 """config.py 유닛 테스트 — auto-resume 설정, 프로젝트 설정."""
 import sys
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "hub"))
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "src"))
 
 from config import (
     AUTO_RESUME_ENABLED, AUTO_RESUME_MODE, AUTO_RESUME_PROMPTS,

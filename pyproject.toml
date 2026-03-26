@@ -33,7 +33,7 @@ Repository = "https://github.com/gbongk/teleclaw"
 Issues = "https://github.com/gbongk/teleclaw/issues"
 
 [project.scripts]
-teleclaw = "hub:main"
+teleclaw = "src:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["hub"]
+packages = ["src"]

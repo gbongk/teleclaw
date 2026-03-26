@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # telegram_api 함수 테스트
 # ============================================================
 
-from hub.telegram_api import (
+from src.telegram_api import (
     _clean_text, _escape_html, _convert_table_to_list,
     _md_to_telegram_html, _split_message,
 )
@@ -200,7 +200,7 @@ class TestSplitMessage(unittest.TestCase):
 class TestToolSummary(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from hub.teleclaw import TeleClaw
+        from src.teleclaw import TeleClaw
         cls.func = staticmethod(TeleClaw._tool_summary)
 
     def test_read_file(self):
@@ -230,7 +230,7 @@ class TestToolSummary(unittest.TestCase):
 class TestFormatToolLine(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from hub.teleclaw import TeleClaw
+        from src.teleclaw import TeleClaw
         cls.func = staticmethod(TeleClaw._format_tool_line)
 
     def test_single(self):
@@ -313,7 +313,7 @@ class TestFormatToolLine(unittest.TestCase):
 class TestStabilizeMarkdown(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from hub.teleclaw import TeleClaw
+        from src.teleclaw import TeleClaw
         cls.func = staticmethod(TeleClaw._stabilize_markdown)
 
     def test_open_code_block(self):
@@ -332,8 +332,8 @@ class TestStabilizeMarkdown(unittest.TestCase):
 class TestAssessHealth(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from hub.teleclaw import TeleClaw
-        from hub.session import SessionState
+        from src.teleclaw import TeleClaw
+        from src.session import SessionState
         cls.supervisor = TeleClaw()
         cls.SessionState = SessionState
 
@@ -438,7 +438,7 @@ class TestHandleEmergencyCommand(unittest.TestCase):
 # ============================================================
 
 from pathlib import Path
-from hub.config import TELEGRAM_DIR
+from src.config import TELEGRAM_DIR
 
 class TestCommandsPauseRelease(unittest.TestCase):
     """restart/reset 명령 시 pause 플래그 해제 확인."""
@@ -479,8 +479,8 @@ class TestCommandsPauseRelease(unittest.TestCase):
 class TestShouldAutoResume(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from hub.teleclaw import TeleClaw
-        from hub.session import SessionState
+        from src.teleclaw import TeleClaw
+        from src.session import SessionState
         cls.supervisor = TeleClaw()
         cls.SessionState = SessionState
 
@@ -573,7 +573,7 @@ class TestArchiveCleanup(unittest.TestCase):
 
     def test_archive_lines_import(self):
         """_archive_lines 함수 존재 확인."""
-        from hub.logging_utils import _archive_lines
+        from src.logging_utils import _archive_lines
         self.assertTrue(callable(_archive_lines))
 
 

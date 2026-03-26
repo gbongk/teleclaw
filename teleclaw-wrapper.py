@@ -27,8 +27,8 @@ LOG_FILE = os.path.join(LOGS_DIR, "wrapper.log")
 SV_LOG_FILE = os.path.join(LOGS_DIR, "teleclaw.log")
 LOCK_FILE = os.path.join(LOGS_DIR, "wrapper.lock")
 sys.path.insert(0, os.path.dirname(__file__))
-from hub.config import PROJECTS, CHAT_ID, ALLOWED_USERS
-from hub.messages import msg
+from src.config import PROJECTS, CHAT_ID, ALLOWED_USERS
+from src.messages import msg
 BOT_TOKENS = [p["bot_token"] for p in PROJECTS.values()]
 BOT_TOKEN = BOT_TOKENS[0] if BOT_TOKENS else ""
 
@@ -202,7 +202,7 @@ def wait_with_polling(wait_sec: int, fail_count: int, start_time: float) -> str 
 
 
 def _is_pid_alive(pid: int) -> bool:
-    from hub.process_utils import is_pid_alive
+    from src.process_utils import is_pid_alive
     return is_pid_alive(pid)
 
 
@@ -260,7 +260,7 @@ def main():
         stderr_file = os.path.join(LOGS_DIR, "teleclaw_stderr.log")
         with open(stderr_file, "w", encoding="utf-8") as sf:
             proc = subprocess.run(
-                [PYTHON, "-m", "hub"],
+                [PYTHON, "-m", "src"],
                 cwd=SUPERVISOR_DIR,
                 stderr=sf,
             )
