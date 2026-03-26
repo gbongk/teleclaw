@@ -98,6 +98,17 @@ projects:
     bot_token: "222:BBB..."
 ```
 
+### Language
+
+TeleClaw supports English and Korean. Set `lang` in `config.yaml`:
+
+```yaml
+lang: "en"   # English (default)
+lang: "ko"   # Korean
+```
+
+All Telegram messages, CLI output, and system notifications will use the selected language.
+
 ### Run
 
 TeleClaw has a two-layer architecture:
