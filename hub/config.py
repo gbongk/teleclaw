@@ -61,7 +61,7 @@ _cfg = _load_yaml(_CONFIG_PATH)
 # --- 프로젝트 설정 ---
 
 CHAT_ID = _cfg.get("chat_id", "")
-LANG = _cfg.get("lang", "ko")
+LANG = _cfg.get("lang", "en")
 
 # 허용된 사용자 ID 목록 (비어있으면 CHAT_ID만 허용)
 _allowed_raw = _cfg.get("allowed_users", "")
