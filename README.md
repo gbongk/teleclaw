@@ -217,7 +217,7 @@ teleclaw/
 |   +-- logging_utils.py     # Logging utils
 +-- teleclaw-wrapper.py      # Auto-restart wrapper
 +-- svctl.py                 # CLI tool
-+-- send_telegram.py         # CLI photo/file sender
++-- telegram_helper.py         # CLI photo/file sender
 +-- config.example.yaml      # Config template
 +-- pyproject.toml            # Package metadata
 +-- Makefile                  # Dev commands
