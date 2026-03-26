@@ -1326,7 +1326,7 @@ async def main():
     existing_pid = _find_existing_teleclaw()
     if existing_pid:
         log(f"이미 실행 중인 TeleClaw 있음 (PID={existing_pid}), 종료")
-        print(f"이미 TeleClaw가 실행 중입니다 (PID={existing_pid}).")
+        print(f"TeleClaw is already running (PID={existing_pid}).")
         sys.exit(42)  # wrapper가 중복 실행 감지용 코드로 인식
 
     _write_lock()

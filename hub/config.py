@@ -13,7 +13,7 @@ def _load_yaml(path: str) -> dict:
     """PyYAML 없이 간단한 YAML 파싱. 중첩 1단계만 지원."""
     if not os.path.exists(path):
         print(f"[config] config.yaml not found: {path}", file=sys.stderr)
-        print(f"[config] cp config.example.yaml config.yaml 후 설정하세요", file=sys.stderr)
+        print(f"[config] Run: cp config.example.yaml config.yaml", file=sys.stderr)
         return {}
     with open(path, "r", encoding="utf-8") as f:
         lines = f.readlines()
