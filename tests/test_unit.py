@@ -430,39 +430,32 @@ class TestHandleEmergencyCommand(unittest.TestCase):
 # commands.py — /restart, /reset 시 pause 해제
 # ============================================================
 
-from pathlib import Path
-from src.config import TELEGRAM_DIR
+from src import state_db as db
 
 class TestCommandsPauseRelease(unittest.TestCase):
-    """restart/reset 명령 시 pause 플래그 해제 확인."""
+    """restart/reset 명령 시 pause 해제 확인 (DB 기반)."""
 
-    def test_restart_removes_pause_flag(self):
-        """pause 플래그가 있을 때 /restart → 삭제."""
-        flag = Path(TELEGRAM_DIR) / "pause_TestSession.flag"
-        flag.parent.mkdir(parents=True, exist_ok=True)
-        flag.write_text("paused")
-        self.assertTrue(flag.exists())
-        # 실제 commands.py 로직 시뮬레이션
-        if flag.exists():
-            flag.unlink(missing_ok=True)
-        self.assertFalse(flag.exists())
+    @classmethod
+    def setUpClass(cls):
+        db.init()
 
-    def test_reset_removes_pause_flag(self):
-        """pause 플래그가 있을 때 /reset → 삭제."""
-        flag = Path(TELEGRAM_DIR) / "pause_TestReset.flag"
-        flag.parent.mkdir(parents=True, exist_ok=True)
-        flag.write_text("paused")
-        self.assertTrue(flag.exists())
-        if flag.exists():
-            flag.unlink(missing_ok=True)
-        self.assertFalse(flag.exists())
+    def test_restart_removes_pause(self):
+        """pause 상태에서 /restart → 해제."""
+        db.set_paused("TestSession", True)
+        self.assertTrue(db.is_paused("TestSession"))
+        db.set_paused("TestSession", False)
+        self.assertFalse(db.is_paused("TestSession"))
 
-    def test_no_error_without_pause_flag(self):
-        """pause 플래그가 없을 때도 에러 없음."""
-        flag = Path(TELEGRAM_DIR) / "pause_NoExist.flag"
-        flag.unlink(missing_ok=True)
-        # 삭제 시도해도 에러 없어야 함
-        flag.unlink(missing_ok=True)
+    def test_reset_removes_pause(self):
+        """pause 상태에서 /reset → 해제."""
+        db.set_paused("TestReset", True)
+        self.assertTrue(db.is_paused("TestReset"))
+        db.set_paused("TestReset", False)
+        self.assertFalse(db.is_paused("TestReset"))
+
+    def test_no_error_without_pause(self):
+        """pause 아닌 상태에서도 에러 없음."""
+        self.assertFalse(db.is_paused("NoExist"))
 
 
 # ============================================================

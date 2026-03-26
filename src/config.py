@@ -68,6 +68,9 @@ _icons = _cfg.get("icons", {})
 ICON_THINKING = _icons.get("thinking", "💭...") if isinstance(_icons, dict) else "💭..."
 ICON_DONE = _icons.get("done", "✓") if isinstance(_icons, dict) else "✓"
 
+# 출력 레벨: minimal / normal / verbose
+OUTPUT_LEVEL = _cfg.get("output_level", "normal")
+
 # 허용된 사용자 ID 목록 (비어있으면 CHAT_ID만 허용)
 _allowed_raw = _cfg.get("allowed_users", "")
 ALLOWED_USERS = set(uid.strip() for uid in _allowed_raw.split(",") if uid.strip()) if _allowed_raw else set()

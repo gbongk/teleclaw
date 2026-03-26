@@ -324,4 +324,13 @@ def handle_command(teleclaw, text: str, bot_token: str, channel) -> bool:
         channel.send_sync(msg("help_text", names=names))
         return True
 
+    if cmd == "/mode":
+        valid = ("minimal", "normal")
+        if arg and arg in valid:
+            teleclaw.output_level = arg
+            channel.send_sync(msg("mode_set", mode=arg))
+        else:
+            channel.send_sync(msg("mode_current", mode=teleclaw.output_level, options="/".join(valid)))
+        return True
+
     return False

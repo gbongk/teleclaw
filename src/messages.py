@@ -306,80 +306,80 @@ _MESSAGES = {
         "en": "[TC] Unauthorized user.",
     },
 
-    # --- wrapper ---
-    "wrapper_emergency_status": {
-        "ko": "🔧 래퍼 비상 모드\n가동: {h}시간 {m}분\n연속 실패: {fails}회\n백오프: {wait}초\nTeleClaw: 중지됨",
-        "en": "🔧 Wrapper emergency mode\nUptime: {h}h {m}m\nConsecutive failures: {fails}\nBackoff: {wait}s\nTeleClaw: stopped",
+    # --- daemon ---
+    "daemon_emergency_status": {
+        "ko": "🔧 데몬 비상 모드\n가동: {h}시간 {m}분\n연속 실패: {fails}회\n백오프: {wait}초\nTeleClaw: 중지됨",
+        "en": "🔧 Daemon emergency mode\nUptime: {h}h {m}m\nConsecutive failures: {fails}\nBackoff: {wait}s\nTeleClaw: stopped",
     },
-    "wrapper_restarting": {
+    "daemon_restarting": {
         "ko": "🔄 TeleClaw 즉시 재시작합니다.",
         "en": "🔄 Restarting TeleClaw immediately.",
     },
-    "wrapper_killed": {
-        "ko": "🛑 래퍼를 종료합니다. 수동 시작이 필요합니다.",
-        "en": "🛑 Wrapper stopped. Manual start required.",
+    "daemon_killed": {
+        "ko": "🛑 데몬을 종료합니다. 수동 시작이 필요합니다.",
+        "en": "🛑 Daemon stopped. Manual start required.",
     },
-    "wrapper_help": {
+    "daemon_help": {
         "ko": (
-            "🔧 래퍼 비상 명령어:\n"
+            "🔧 데몬 비상 명령어:\n"
             "  /status — 상태\n"
             "  /restart — 즉시 재시작\n"
-            "  /kill — 래퍼 종료\n"
+            "  /kill — 데몬 종료\n"
             "  /ask <메시지> — Claude에게 질문\n"
             "  /help — 이 목록"
         ),
         "en": (
-            "🔧 Wrapper emergency commands:\n"
+            "🔧 Daemon emergency commands:\n"
             "  /status — status\n"
             "  /restart — restart now\n"
-            "  /kill — stop wrapper\n"
+            "  /kill — stop daemon\n"
             "  /ask <message> — ask Claude\n"
             "  /help — this list"
         ),
     },
-    "wrapper_ask_usage": {
+    "daemon_ask_usage": {
         "ko": "사용법: /ask <질문>",
         "en": "Usage: /ask <question>",
     },
-    "wrapper_ask_processing": {
+    "daemon_ask_processing": {
         "ko": "🤖 Claude에게 질문 중...",
         "en": "🤖 Asking Claude...",
     },
-    "wrapper_ask_response": {
+    "daemon_ask_response": {
         "ko": "🤖 Claude:\n{answer}",
         "en": "🤖 Claude:\n{answer}",
     },
-    "wrapper_ask_error": {
+    "daemon_ask_error": {
         "ko": "❌ Claude 에러:\n{error}",
         "en": "❌ Claude error:\n{error}",
     },
-    "wrapper_ask_empty": {
+    "daemon_ask_empty": {
         "ko": "🤖 Claude: (빈 응답)",
         "en": "🤖 Claude: (empty response)",
     },
-    "wrapper_ask_timeout": {
+    "daemon_ask_timeout": {
         "ko": "⏰ Claude 응답 시간 초과 (2분)",
         "en": "⏰ Claude response timeout (2min)",
     },
-    "wrapper_ask_fail": {
+    "daemon_ask_fail": {
         "ko": "❌ Claude 실행 실패: {error}",
         "en": "❌ Claude execution failed: {error}",
     },
-    "wrapper_crash": {
+    "daemon_crash": {
         "ko": "⚠️ TeleClaw 비정상 종료\n생존시간: {elapsed:.0f}초\nexit_code: {code}\n연속 실패: {fails}회\n다음 재시도: {wait}초 후\n비상 명령: /help",
         "en": "⚠️ TeleClaw abnormal exit\nAlive: {elapsed:.0f}s\nexit_code: {code}\nConsecutive failures: {fails}\nNext retry: {wait}s\nEmergency: /help",
     },
-    "wrapper_crash_stderr": {
+    "daemon_crash_stderr": {
         "ko": "🔍 teleclaw 크래시 stderr:\n{stderr}",
         "en": "🔍 TeleClaw crash stderr:\n{stderr}",
     },
-    "wrapper_frequent_restart": {
+    "daemon_frequent_restart": {
         "ko": "⚠️ 잦은 재시작 감지: {count}회/10분\n마지막 생존: {elapsed:.0f}초, exit_code={code}",
         "en": "⚠️ Frequent restarts detected: {count}/10min\nLast alive: {elapsed:.0f}s, exit_code={code}",
     },
-    "wrapper_already_running": {
-        "ko": "이미 래퍼가 실행 중입니다.",
-        "en": "Wrapper is already running.",
+    "daemon_already_running": {
+        "ko": "이미 데몬이 실행 중입니다.",
+        "en": "Daemon is already running.",
     },
 
     # --- tcctl ---
@@ -500,6 +500,22 @@ _MESSAGES = {
     "tcctl_sys_fail": {
         "ko": "시스템 정보 조회 실패",
         "en": "Failed to query system info",
+    },
+
+    # --- 수신 확인 ---
+    "ack_busy": {
+        "ko": "{icon} (대기 {qsize}건)",
+        "en": "{icon} ({qsize} queued)",
+    },
+
+    # --- /mode ---
+    "mode_set": {
+        "ko": "[TC] 출력 모드: {mode}",
+        "en": "[TC] Output mode: {mode}",
+    },
+    "mode_current": {
+        "ko": "[TC] 현재 모드: {mode} ({options})",
+        "en": "[TC] Current mode: {mode} ({options})",
     },
 }
 

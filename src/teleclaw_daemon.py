@@ -126,28 +126,28 @@ def handle_emergency_command(text: str, fail_count: int, wait: int, start_time: 
     if cmd in ("/status", "상태"):
         uptime = int(time.time() - start_time)
         h, m = uptime // 3600, (uptime % 3600) // 60
-        tg_send(msg("wrapper_emergency_status", h=h, m=m, fails=fail_count, wait=wait))
+        tg_send(msg("daemon_emergency_status", h=h, m=m, fails=fail_count, wait=wait))
         return None
 
     if cmd in ("/restart", "재시작", "/force"):
-        tg_send(msg("wrapper_restarting"))
+        tg_send(msg("daemon_restarting"))
         return "restart"
 
     if cmd in ("/kill", "종료"):
-        tg_send(msg("wrapper_killed"))
+        tg_send(msg("daemon_killed"))
         return "kill"
 
     if cmd in ("/help", "도움"):
-        tg_send(msg("wrapper_help"))
+        tg_send(msg("daemon_help"))
         return None
 
     # /ask — Claude CLI로 임시 질문
     if text.strip().lower().startswith("/ask "):
         question = text.strip()[5:].strip()
         if not question:
-            tg_send(msg("wrapper_ask_usage"))
+            tg_send(msg("daemon_ask_usage"))
             return None
-        tg_send(msg("wrapper_ask_processing"))
+        tg_send(msg("daemon_ask_processing"))
         try:
             r = subprocess.run(
                 ["claude", "-p", question, "--output-format", "text"],
@@ -159,15 +159,15 @@ def handle_emergency_command(text: str, fail_count: int, wait: int, start_time: 
                 # 4096자 제한
                 if len(answer) > 3900:
                     answer = answer[:3900] + "\n... (잘림)"
-                tg_send(msg("wrapper_ask_response", answer=answer))
+                tg_send(msg("daemon_ask_response", answer=answer))
             elif r.stderr.strip():
-                tg_send(msg("wrapper_ask_error", error=r.stderr[:1000]))
+                tg_send(msg("daemon_ask_error", error=r.stderr[:1000]))
             else:
-                tg_send(msg("wrapper_ask_empty"))
+                tg_send(msg("daemon_ask_empty"))
         except subprocess.TimeoutExpired:
-            tg_send(msg("wrapper_ask_timeout"))
+            tg_send(msg("daemon_ask_timeout"))
         except Exception as e:
-            tg_send(msg("wrapper_ask_fail", error=e))
+            tg_send(msg("daemon_ask_fail", error=e))
         return None
 
     return None
@@ -237,7 +237,7 @@ def _release_lock():
 
 def main():
     if not _acquire_lock():
-        print(msg("wrapper_already_running"))
+        print(msg("daemon_already_running"))
         sys.exit(0)
 
     fail_count = 0
@@ -273,7 +273,7 @@ def main():
         recent_restarts.append(now)
         recent_restarts = [t for t in recent_restarts if now - t < 600]
         if len(recent_restarts) >= 5:
-            tg_send(msg("wrapper_frequent_restart", count=len(recent_restarts), elapsed=elapsed, code=exit_code))
+            tg_send(msg("daemon_frequent_restart", count=len(recent_restarts), elapsed=elapsed, code=exit_code))
             log(f"잦은 재시작 경고: {len(recent_restarts)}회/10분")
 
         # 비정상 종료 시 stderr 기록
@@ -285,7 +285,7 @@ def main():
                     stderr_tail = stderr_content[-500:]
                     log(f"teleclaw stderr: {stderr_tail}")
                     if elapsed < MIN_ALIVE_SEC:
-                        tg_send(msg("wrapper_crash_stderr", stderr=stderr_tail[:1000]))
+                        tg_send(msg("daemon_crash_stderr", stderr=stderr_tail[:1000]))
             except Exception:
                 pass
 
@@ -312,7 +312,7 @@ def main():
                 or (fail_count > 50 and fail_count % 50 == 0)
             )
             if should_notify:
-                tg_send(msg("wrapper_crash", elapsed=elapsed, code=exit_code, fails=fail_count, wait=wait))
+                tg_send(msg("daemon_crash", elapsed=elapsed, code=exit_code, fails=fail_count, wait=wait))
                 notified = True
                 log("텔레그램 알림 전송")
 

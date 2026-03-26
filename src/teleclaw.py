@@ -23,6 +23,7 @@ from claude_code_sdk import (
     ClaudeSDKClient, ClaudeCodeOptions,
     SystemMessage, AssistantMessage, UserMessage, ResultMessage,
 )
+from claude_code_sdk.types import StreamEvent
 
 # monkey-patch: 알 수 없는 메시지 타입 (rate_limit_event 등) 무시
 import claude_code_sdk._internal.message_parser as _mp
@@ -40,7 +41,7 @@ from .config import (
     HEALTH_CHECK_INTERVAL, STUCK_THRESHOLD,
     MAX_RESTARTS_PER_WINDOW, RESTART_WINDOW,
     AUTO_RESUME_ENABLED, AUTO_RESUME_MODE, AUTO_RESUME_PROMPTS,
-    ICON_THINKING, ICON_DONE,
+    ICON_THINKING, ICON_DONE, OUTPUT_LEVEL,
 )
 from .logging_utils import log, _find_existing_teleclaw, _write_lock, _release_lock
 from .channel_telegram import TelegramChannel
@@ -63,6 +64,7 @@ class TeleClaw:
         self._ask_client: ClaudeSDKClient | None = None
         self._ask_busy = False
         self._fresh_start = True  # TeleClaw 프로세스 시작 직후 (개별 세션 재시작과 구분)
+        self.output_level = OUTPUT_LEVEL  # minimal / normal (런타임 /mode로 전환 가능)
 
     async def start(self):
         log("TeleClaw 시작")
@@ -873,6 +875,7 @@ class TeleClaw:
                     msg_count += 1
 
                     if isinstance(msg, AssistantMessage):
+                        _lvl = self.output_level
                         for block in msg.content:
                             block_type = type(block).__name__
                             if hasattr(block, "text") and block.text.strip():
@@ -886,11 +889,13 @@ class TeleClaw:
                                 tool_name = getattr(block, "name", "tool")
                                 tool_input = getattr(block, "input", {})
                                 last_tool_name = tool_name
-                                summary = self._tool_summary(tool_name, tool_input)
-                                tool_lines.append(f"\U0001f527 {summary}")
-                                log(f"{state.name}: [block] ToolUse: {summary}")
+                                if _lvl != "minimal":
+                                    summary = self._tool_summary(tool_name, tool_input)
+                                    tool_lines.append(f"\U0001f527 {summary}")
+                                log(f"{state.name}: [block] ToolUse: {self._tool_summary(tool_name, tool_input)}")
                             elif block_type == "ThinkingBlock":
-                                log(f"{state.name}: [block] Thinking (skip)")
+                                thinking_text = getattr(block, "thinking", "") or ""
+                                log(f"{state.name}: [block] Thinking ({len(thinking_text)}자)")
                                 continue
                             else:
                                 log(f"{state.name}: [block] {block_type} (skip)")
@@ -957,12 +962,17 @@ class TeleClaw:
                         # ToolResult 처리 — ai-chat 결과는 전문, 나머지는 요약
                         result_text = ""
                         for block in msg.content:
+                            bt = type(block).__name__
                             if hasattr(block, "text") and block.text:
                                 result_text = block.text.strip()
+                                log(f"{state.name}: [user-block] {bt} ({len(result_text)}자)")
                                 break
                             elif hasattr(block, "content") and isinstance(block.content, str):
                                 result_text = block.content.strip()
+                                log(f"{state.name}: [user-block] {bt} ({len(result_text)}자)")
                                 break
+                            else:
+                                log(f"{state.name}: [user-block] {bt} (skip)")
                         if result_text:
                             is_ai_chat = last_tool_name.startswith("mcp__ai_chat__") or last_tool_name.startswith("mcp__ai-chat__")
                             if is_ai_chat:
@@ -989,10 +999,10 @@ class TeleClaw:
                                 live_lines.append(f"\U0001f4ac {display_text}")
                                 log(f"{state.name}: [result] ai-chat ({len(result_text)}자)")
                             elif last_tool_name in ("Edit", "Write", "NotebookEdit", "Read", "Grep", "Glob"):
-                                # 코드/파일 관련 결과는 길이만 표시 (내용 생략)
+                                # 코드/파일 관련 결과는 길이만 표시
                                 if tool_lines:
                                     tool_lines[-1] += f" ({len(result_text)}자)"
-                                log(f"{state.name}: [result] {last_tool_name} ({len(result_text)}자, 생략)")
+                                log(f"{state.name}: [result] {last_tool_name} ({len(result_text)}자)")
                             elif len(result_text) <= 500:
                                 if tool_lines:
                                     live_lines.append(self._format_tool_line(tool_lines))
@@ -1000,7 +1010,6 @@ class TeleClaw:
                                 live_lines.append(result_text)
                                 log(f"{state.name}: [result] short ({len(result_text)}자)")
                             else:
-                                # 마지막 도구 라인에 결과 요약 붙이기
                                 if tool_lines:
                                     tool_lines[-1] += f" ({len(result_text)}자)"
                                 log(f"{state.name}: [result] long ({len(result_text)}자)")
@@ -1041,7 +1050,17 @@ class TeleClaw:
                             if result_text:
                                 live_lines.append(result_text)
                                 log(f"{state.name}: [result-fallback] {len(result_text)}자")
+                        if hasattr(msg, "total_cost_usd") and msg.total_cost_usd:
+                            log(f"{state.name}: [cost] ${msg.total_cost_usd:.4f}")
                         break
+
+                    elif isinstance(msg, SystemMessage):
+                        subtype = getattr(msg, "subtype", "?")
+                        log(f"{state.name}: [system] subtype={subtype}")
+
+                    elif isinstance(msg, StreamEvent):
+                        event = getattr(msg, "event", "?")
+                        log(f"{state.name}: [stream] event={event}")
 
                 # 최종 업데이트 (HTML 변환 적용)
                 if tool_lines:
@@ -1245,7 +1264,11 @@ class TeleClaw:
                         continue
 
                     # 수신 확인
-                    await ch.send(ICON_THINKING)
+                    if state.busy:
+                        qsize = state.message_queue.qsize() + 1
+                        await ch.send(msg("ack_busy", icon=ICON_THINKING, qsize=qsize))
+                    else:
+                        await ch.send(ICON_THINKING)
 
                     # update_id 추적 (channel.poll이 offset 자동 관리하므로 현재 offset - 1)
                     update_id = ch.get_offset() - 1
