@@ -36,25 +36,52 @@ No hooks or plugins required — TeleClaw receives all events directly through t
 ## Architecture
 
 ```
-┌──────────────┐
-│   Telegram   │  You send a message from your phone
-└──────┬───────┘
-       │ long poll
-┌──────▼───────────────────────────────────┐
-│            TeleClaw (asyncio)            │
-│                                          │
-│  ┌─────────┐ ┌─────────┐ ┌─────────┐    │
-│  │ Project1│ │ Project2│ │ Project3│ .. │  N independent sessions
-│  │  bot    │ │  bot    │ │  bot    │    │
-│  └────┬────┘ └────┬────┘ └────┬────┘    │
-│       │           │           │          │
-│  Health check (2min) · Watchdog (5min)   │
-└───────┼───────────┼───────────┼──────────┘
-        │           │           │
-┌───────▼───────────▼───────────▼──────────┐
-│          Claude Code SDK sessions         │
-│   (persistent context, auto-resume)       │
-└──────────────────────────────────────────┘
+┌─────────────────┐
+│  Telegram App   │  You send a message from your phone
+└────────┬────────┘
+         │ long poll (25s)
+┌────────▼─────────────────────────────────────────────┐
+│                  TeleClaw (asyncio)                   │
+│                                                       │
+│  Per-project bots          Background loops           │
+│  ┌──────────────┐          ┌────────────────────┐     │
+│  │  ProjectA    │          │ Health check (2min) │     │
+│  │  ┌────────┐  │          │  DEAD → restart     │     │
+│  │  │bot poll │──┼── msg ──│  STUCK → restart    │     │
+│  │  └────────┘  │  queue   ├────────────────────┤     │
+│  │  ┌────────┐  │          │ Watchdog (5min)     │     │
+│  │  │session │◄─┤          │  restart loop guard │     │
+│  │  │  loop  │  │          ├────────────────────┤     │
+│  │  └───┬────┘  │          │ Flag/DB monitor (1s)│     │
+│  │      │       │          │  /restart, /pause   │     │
+│  ├──────┼───────┤          └────────────────────┘     │
+│  │  ProjectB    │                                     │
+│  │  (same)      │                                     │
+│  └──────────────┘                                     │
+│         │                                             │
+│         │ SDK query + streaming                       │
+│         ▼                                             │
+│  ┌──────────────────────────────────────────┐         │
+│  │        Claude Code SDK sessions          │         │
+│  │  ┌──────────┐  ┌──────────┐              │         │
+│  │  │ ProjectA │  │ ProjectB │  ...         │         │
+│  │  │ context  │  │ context  │              │         │
+│  │  │ preserved│  │ preserved│              │         │
+│  │  └──────────┘  └──────────┘              │         │
+│  └──────────────────────────────────────────┘         │
+│         │                                             │
+│         │ streaming events (text, tool_use, result)   │
+│         ▼                                             │
+│  ┌──────────────────────┐                             │
+│  │ editMessage (3s buf) │── live response to Telegram │
+│  └──────────────────────┘                             │
+└───────────────────────────────────────────────────────┘
+         │
+┌────────▼────────┐
+│ teleclaw-wrapper │  Process guardian
+│  auto-restart    │  exponential backoff: 3s → 30min
+│  emergency poll  │  /restart, /kill during backoff
+└─────────────────┘
 ```
 
 ## Quick Start
