@@ -64,38 +64,7 @@ print('OK' if mid else 'FAILED')
 
 If it fails, ask the user to double-check the token and chat_id.
 
-## Step 5: Register Relay Hooks (Optional)
-
-Ask: "Do you want real-time tool use notifications in Telegram? (recommended)"
-
-If yes, explain they need to add hooks to their Claude Code settings. Show the paths:
-
-**Linux/Mac:** `~/.claude/settings.json`
-**Windows:** `C:\Users\<username>\.claude\settings.json`
-
-Add to the `hooks` section:
-```json
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "type": "command",
-        "command": "python /path/to/teleclaw/relay-tool-use.py"
-      }
-    ],
-    "Stop": [
-      {
-        "type": "command",
-        "command": "python /path/to/teleclaw/relay-stop.py"
-      }
-    ]
-  }
-}
-```
-
-Replace `/path/to/teleclaw/` with the actual teleclaw directory.
-
-## Step 6: Start
+## Step 5: Start
 
 Ask: "How do you want to run TeleClaw?"
 
@@ -114,7 +83,7 @@ teleclaw
 python teleclaw-wrapper.py
 ```
 
-## Step 7: Add More Projects (Optional)
+## Step 6: Add More Projects (Optional)
 
 Ask: "Do you want to add more projects? Each project gets its own Telegram bot."
 
