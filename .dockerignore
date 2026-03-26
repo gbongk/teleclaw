@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+logs/
+data/
+config.yaml
+.git/
+.claude/
+docs/
+tests/
+*.md
+LICENSE
