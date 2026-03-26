@@ -104,19 +104,34 @@ projects:
 
 ### Run
 
+TeleClaw has a two-layer architecture:
+
+```
+teleclaw-wrapper.py          ← Process guardian (auto-restart, exponential backoff)
+    └── teleclaw (hub)       ← Core (session management, Telegram polling)
+            └── Claude Code SDK sessions (one per project)
+```
+
+**Option A: With wrapper (recommended for production)**
 ```bash
-# Direct
-teleclaw
-
-# With auto-restart wrapper (recommended)
 python teleclaw-wrapper.py
+```
+The wrapper automatically restarts TeleClaw if it crashes, with exponential backoff (3s → 30min max). Even during backoff, it polls Telegram for emergency commands (`/restart`, `/kill`).
 
-# As a system service
+**Option B: Direct (for development/debugging)**
+```bash
+teleclaw
+```
+No auto-restart. If TeleClaw crashes, it stays down.
+
+**Option C: System service (recommended for servers)**
+```bash
 teleclaw install       # systemd (Linux) or Task Scheduler (Windows)
 teleclaw status        # check service status
 teleclaw logs          # view logs
 teleclaw uninstall     # remove service
 ```
+This registers `teleclaw-wrapper.py` as a system service that starts on boot/login.
 
 ## Telegram Commands
 
@@ -158,6 +173,22 @@ Crash (alive < 30s)        →  exponential backoff: 3s → 6s → 12s → ... �
 ```
 
 During backoff, the wrapper still polls Telegram for emergency commands (`/restart`, `/kill`).
+
+### What if the wrapper itself dies?
+
+If you used `teleclaw install`, the system service (systemd/Task Scheduler) will restart the wrapper on login/boot. Otherwise, you need to manually start `python teleclaw-wrapper.py` again.
+
+To check if everything is running:
+```bash
+# Via Telegram
+/status
+
+# Via CLI
+python svctl.py ps
+
+# Via system service
+teleclaw status
+```
 
 ## Project Structure
 
