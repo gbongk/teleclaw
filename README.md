@@ -138,7 +138,7 @@ teleclaw uninstall     # remove service
 Or run manually:
 ```bash
 # With auto-restart wrapper
-python teleclaw-teleclaw_daemon.py
+python -m src.teleclaw_daemon
 
 # Direct (no auto-restart, for debugging)
 teleclaw
@@ -187,7 +187,7 @@ During backoff, the wrapper still polls Telegram for emergency commands (`/resta
 
 ### What if the wrapper itself dies?
 
-If you used `teleclaw install`, the system service (systemd/Task Scheduler) will restart the wrapper on login/boot. Otherwise, you need to manually start `python teleclaw-teleclaw_daemon.py` again.
+If you used `teleclaw install`, the system service (systemd/Task Scheduler) will restart the wrapper on login/boot. Otherwise, you need to manually start `python -m src.teleclaw_daemon` again.
 
 To check if everything is running:
 ```bash
@@ -195,7 +195,7 @@ To check if everything is running:
 /status
 
 # Via CLI
-python svctl.py ps
+python -m src.teleclaw_ctl ps
 
 # Via system service
 teleclaw status

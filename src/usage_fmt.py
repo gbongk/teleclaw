@@ -1,4 +1,4 @@
-"""usage 포맷 유틸 — commands.py, svctl.py에서 공유."""
+"""usage 포맷 유틸 — commands.py, teleclaw_ctl.py에서 공유."""
 
 from datetime import datetime, timezone
 

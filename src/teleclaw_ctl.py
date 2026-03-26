@@ -2,14 +2,13 @@
 """TeleClaw CLI — 텔레그램/콘솔 양쪽에서 사용 가능한 명령어 도구.
 
 사용법:
-  python sv.py s              # 상태
-  python sv.py r [name]       # 재시작 (기본: 현재 프로젝트)
-  python sv.py x [name]       # 리셋 (컨텍스트 초기화)
-  python sv.py p <name>       # 일시정지
-  python sv.py w [name]       # 해제
-  python sv.py l [N]          # 로그 (기본 20줄)
-  python sv.py u              # 사용량
-  python sv.py h              # 도움말
+  python -m src.teleclaw_ctl s              # 상태
+  python -m src.teleclaw_ctl r [name]       # 재시작
+  python -m src.teleclaw_ctl x [name]       # 리셋
+  python -m src.teleclaw_ctl p <name>       # 일시정지
+  python -m src.teleclaw_ctl l [N]          # 로그
+  python -m src.teleclaw_ctl u              # 사용량
+  python -m src.teleclaw_ctl h              # 도움말
 """
 
 import json
