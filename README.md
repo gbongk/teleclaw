@@ -55,13 +55,16 @@ Keep Claude Code working on your projects while you're away from your desk — m
 ### Install
 
 ```bash
-# From source
+# Using uv (recommended — isolated environment)
+uv tool install git+https://github.com/gbongk/teleclaw@v0.1.0
+
+# Or using pip
+pip install git+https://github.com/gbongk/teleclaw@v0.1.0
+
+# From source (for development)
 git clone https://github.com/gbongk/teleclaw.git
 cd teleclaw
 pip install -e .
-
-# Or via pip
-pip install git+https://github.com/gbongk/teleclaw.git
 ```
 
 ### Configure
