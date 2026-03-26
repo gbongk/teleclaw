@@ -395,7 +395,7 @@ class TestHandleEmergencyCommand(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from src import wrapper as mod
+        from src import teleclaw_daemon as mod
         mod.tg_send = lambda text: None
         cls._func = staticmethod(mod.handle_emergency_command)
 

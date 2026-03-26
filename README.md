@@ -138,7 +138,7 @@ teleclaw uninstall     # remove service
 Or run manually:
 ```bash
 # With auto-restart wrapper
-python teleclaw-wrapper.py
+python teleclaw-teleclaw_daemon.py
 
 # Direct (no auto-restart, for debugging)
 teleclaw
@@ -176,7 +176,7 @@ DEAD/STUCK triggers automatic `_restart_session()` with resume.
 
 ### 2. Wrapper (process level)
 
-`teleclaw-wrapper.py` monitors the TeleClaw process itself:
+`teleclaw-teleclaw_daemon.py` monitors the TeleClaw process itself:
 
 ```
 Normal exit (alive > 30s)  →  restart after 3s
@@ -187,7 +187,7 @@ During backoff, the wrapper still polls Telegram for emergency commands (`/resta
 
 ### What if the wrapper itself dies?
 
-If you used `teleclaw install`, the system service (systemd/Task Scheduler) will restart the wrapper on login/boot. Otherwise, you need to manually start `python teleclaw-wrapper.py` again.
+If you used `teleclaw install`, the system service (systemd/Task Scheduler) will restart the wrapper on login/boot. Otherwise, you need to manually start `python teleclaw-teleclaw_daemon.py` again.
 
 To check if everything is running:
 ```bash
@@ -224,7 +224,7 @@ The bot token is auto-matched based on your current working directory and `confi
 teleclaw/
 +-- src/                       # Main package
 |   +-- teleclaw.py            # TeleClaw class (core)
-|   +-- wrapper.py             # Auto-restart wrapper
+|   +-- teleclaw_daemon.py             # Auto-restart wrapper
 |   +-- teleclaw_ctl.py               # CLI management tool
 |   +-- telegram_helper.py     # CLI: send text/photo/file to Telegram
 |   +-- telegram_api.py        # Telegram API (sync/async, text/photo/file)

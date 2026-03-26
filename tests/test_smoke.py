@@ -61,7 +61,7 @@ def read_code():
 
 
 def read_wrapper_code():
-    wp_path = os.path.join(SUPERVISOR_DIR, "src", "wrapper.py")
+    wp_path = os.path.join(SUPERVISOR_DIR, "src", "teleclaw_daemon.py")
     with open(wp_path, "r", encoding="utf-8") as f:
         return f.read()
 

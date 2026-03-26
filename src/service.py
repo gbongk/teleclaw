@@ -14,7 +14,7 @@ def _get_python():
 
 
 def _get_wrapper_path():
-    return str(Path(__file__).resolve().parent / "wrapper.py")
+    return str(Path(__file__).resolve().parent / "teleclaw_daemon.py")
 
 
 def _get_service_dir():
