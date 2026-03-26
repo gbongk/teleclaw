@@ -60,10 +60,10 @@ def _resolve_name(arg):
             return None
         return name
     # 대소문자 무시 매칭
-    for n in SESSION_NAMES + ["supervisor"]:
+    for n in SESSION_NAMES + ["teleclaw"]:
         if n.lower() == arg.lower():
             return n
-    print(msg("svctl_session_not_found", name=arg, available=", ".join(SESSION_NAMES) + ", supervisor"))
+    print(msg("svctl_session_not_found", name=arg, available=", ".join(SESSION_NAMES) + ", teleclaw"))
     return None
 
 
@@ -239,8 +239,8 @@ def cmd_restart(arg, mode="resume"):
     if not name:
         return
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if name.lower() == "supervisor":
-        flag = DATA_DIR / "restart_request_supervisor.flag"
+    if name.lower() == "teleclaw":
+        flag = DATA_DIR / "restart_request_teleclaw.flag"
         flag.write_text("force")
         print(msg("svctl_restart_sv"))
     else:
@@ -257,7 +257,7 @@ def cmd_restart(arg, mode="resume"):
 def cmd_pause(arg):
     """세션을 일시정지 — 프로세스 종료 + TeleClaw가 재시작하지 않음."""
     name = _resolve_name(arg)
-    if not name or name.lower() == "supervisor":
+    if not name or name.lower() == "teleclaw":
         print(msg("svctl_specify_session_no_sv"))
         return
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -399,7 +399,7 @@ def cmd_ctx():
 def cmd_help():
     print(msg("svctl_help"))
     print()
-    print(f"  {', '.join(SESSION_NAMES)}, supervisor")
+    print(f"  {', '.join(SESSION_NAMES)}, teleclaw")
 
 
 def main():
@@ -414,7 +414,7 @@ def main():
         "sys": cmd_sys, "system": cmd_sys,
         "ps": cmd_ps, "s": cmd_ps, "status": cmd_ps,
         "r": lambda: cmd_restart(arg), "restart": lambda: cmd_restart(arg),
-        "sv": lambda: cmd_restart("supervisor"), "supervisor": lambda: cmd_restart("supervisor"),
+        "sv": lambda: cmd_restart("teleclaw"), "teleclaw": lambda: cmd_restart("teleclaw"),
         "reset": lambda: cmd_restart(arg, "reset"),
         "p": lambda: cmd_pause(arg), "pause": lambda: cmd_pause(arg),
         "c": cmd_ctx, "ctx": cmd_ctx,
