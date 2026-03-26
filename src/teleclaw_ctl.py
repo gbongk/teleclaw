@@ -137,8 +137,8 @@ def _get_all_processes():
 
         # python teleclaw 프로세스
         if "python" in proc_name.lower():
-            if "supervisor-wrapper" in cmdline or "teleclaw-wrapper" in cmdline:
-                infra.append({"pid": pid, "mem_mb": mem_mb, "label": "wrapper"})
+            if "teleclaw_daemon" in cmdline or "teleclaw-wrapper" in cmdline or "supervisor-wrapper" in cmdline:
+                infra.append({"pid": pid, "mem_mb": mem_mb, "label": "daemon"})
             elif "supervisor" in cmdline or "teleclaw" in cmdline:
                 infra.append({"pid": pid, "mem_mb": mem_mb, "label": "teleclaw"})
             continue

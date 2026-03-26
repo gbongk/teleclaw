@@ -2,9 +2,9 @@
 """텔레그램으로 텍스트/이미지/파일 전송 CLI.
 
 Usage:
-    python send_telegram.py text  <message>
-    python send_telegram.py photo <path> [caption]
-    python send_telegram.py file  <path> [caption]
+    python -m src.telegram_helper text  <message>
+    python -m src.telegram_helper photo <path> [caption]
+    python -m src.telegram_helper file  <path> [caption]
 """
 import os
 import sys
@@ -28,7 +28,7 @@ def _match_project():
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Usage: send_telegram.py <text|photo|file> <message|path> [caption]")
+        print("Usage: telegram_helper <text|photo|file> <message|path> [caption]")
         sys.exit(1)
 
     kind = sys.argv[1]
