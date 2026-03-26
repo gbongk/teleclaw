@@ -197,6 +197,23 @@ python svctl.py ps
 teleclaw status
 ```
 
+## Telegram Helper
+
+`telegram_helper.py` lets Claude Code sessions send messages directly to Telegram — independent of TeleClaw's automatic streaming.
+
+```bash
+# Text message
+python telegram_helper.py text "Build complete!"
+
+# Photo with optional caption
+python telegram_helper.py photo screenshot.png "Latest UI"
+
+# File with optional caption
+python telegram_helper.py file report.csv "Analysis result"
+```
+
+The bot token is auto-matched based on your current working directory and `config.yaml`.
+
 ## Project Structure
 
 ```
@@ -217,7 +234,7 @@ teleclaw/
 |   +-- logging_utils.py     # Logging utils
 +-- teleclaw-wrapper.py      # Auto-restart wrapper
 +-- svctl.py                 # CLI tool
-+-- telegram_helper.py         # CLI photo/file sender
++-- telegram_helper.py       # CLI: send text/photo/file to Telegram
 +-- config.example.yaml      # Config template
 +-- pyproject.toml            # Package metadata
 +-- Makefile                  # Dev commands
