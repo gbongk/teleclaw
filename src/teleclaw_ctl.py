@@ -22,7 +22,7 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-TELECLAW_DIR = Path(__file__).resolve().parent
+TELECLAW_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = TELECLAW_DIR / "data"
 LOGS_DIR = TELECLAW_DIR / "logs"
 STATUS_FILE = LOGS_DIR / "teleclaw_status.json"
