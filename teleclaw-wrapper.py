@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-슈퍼바이저 래퍼 — supervisor 패키지를 감싸서 자동 재시작 + 데스루프 방지.
+TeleClaw 래퍼 — teleclaw 패키지를 감싸서 자동 재시작 + 데스루프 방지.
 
 - 30초 미만 생존 = 코드 에러로 판정
 - 지수 백오프: 3초 → 30초 → 5분 → 30분(최대)
@@ -24,10 +24,11 @@ SUPERVISOR_DIR = os.path.dirname(__file__)
 PYTHON = sys.executable
 LOGS_DIR = os.path.join(os.path.dirname(__file__), "logs")
 LOG_FILE = os.path.join(LOGS_DIR, "wrapper.log")
-SV_LOG_FILE = os.path.join(LOGS_DIR, "supervisor.log")
+SV_LOG_FILE = os.path.join(LOGS_DIR, "teleclaw.log")
 LOCK_FILE = os.path.join(LOGS_DIR, "wrapper.lock")
 sys.path.insert(0, os.path.dirname(__file__))
-from hub.config import PROJECTS, CHAT_ID
+from hub.config import PROJECTS, CHAT_ID, ALLOWED_USERS
+from hub.messages import msg
 BOT_TOKENS = [p["bot_token"] for p in PROJECTS.values()]
 BOT_TOKEN = BOT_TOKENS[0] if BOT_TOKENS else ""
 
@@ -87,7 +88,7 @@ def tg_get_updates(offset: int, timeout: int = 5, bot_token: str = "") -> tuple[
             new_offset = u["update_id"] + 1
             msg = u.get("message", {})
             chat_id = str(msg.get("chat", {}).get("id", ""))
-            if chat_id != CHAT_ID:
+            if chat_id not in ALLOWED_USERS:
                 continue
             text = msg.get("text", "")
             if text:
@@ -111,7 +112,7 @@ def handle_emergency_command(text: str, fail_count: int, wait: int, start_time: 
 
     if cmd in ("/log", "/logs", "로그"):
         lines = []
-        for path, label in [(LOG_FILE, "wrapper"), (SV_LOG_FILE, "supervisor")]:
+        for path, label in [(LOG_FILE, "wrapper"), (SV_LOG_FILE, "teleclaw")]:
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     tail = f.readlines()[-10:]
@@ -126,42 +127,28 @@ def handle_emergency_command(text: str, fail_count: int, wait: int, start_time: 
     if cmd in ("/status", "상태"):
         uptime = int(time.time() - start_time)
         h, m = uptime // 3600, (uptime % 3600) // 60
-        tg_send(
-            f"🔧 래퍼 비상 모드\n"
-            f"가동: {h}시간 {m}분\n"
-            f"연속 실패: {fail_count}회\n"
-            f"백오프: {wait}초\n"
-            f"슈퍼바이저: 중지됨"
-        )
+        tg_send(msg("wrapper_emergency_status", h=h, m=m, fails=fail_count, wait=wait))
         return None
 
     if cmd in ("/restart", "재시작", "/force"):
-        tg_send("🔄 슈퍼바이저 즉시 재시작합니다.")
+        tg_send(msg("wrapper_restarting"))
         return "restart"
 
     if cmd in ("/kill", "종료"):
-        tg_send("🛑 래퍼를 종료합니다. 수동 시작이 필요합니다.")
+        tg_send(msg("wrapper_killed"))
         return "kill"
 
     if cmd in ("/help", "도움"):
-        tg_send(
-            "🔧 래퍼 비상 명령어\n"
-            "  /log — 최근 로그 확인\n"
-            "  /status — 현재 상태\n"
-            "  /restart — 즉시 재시작\n"
-            "  /kill — 래퍼 종료\n"
-            "  /ask <메시지> — Claude에게 질문\n"
-            "  /help — 이 목록"
-        )
+        tg_send(msg("wrapper_help"))
         return None
 
     # /ask — Claude CLI로 임시 질문
     if text.strip().lower().startswith("/ask "):
         question = text.strip()[5:].strip()
         if not question:
-            tg_send("사용법: /ask <질문>")
+            tg_send(msg("wrapper_ask_usage"))
             return None
-        tg_send(f"🤖 Claude에게 질문 중...")
+        tg_send(msg("wrapper_ask_processing"))
         try:
             r = subprocess.run(
                 ["claude", "-p", question, "--output-format", "text"],
@@ -173,15 +160,15 @@ def handle_emergency_command(text: str, fail_count: int, wait: int, start_time: 
                 # 4096자 제한
                 if len(answer) > 3900:
                     answer = answer[:3900] + "\n... (잘림)"
-                tg_send(f"🤖 Claude:\n{answer}")
+                tg_send(msg("wrapper_ask_response", answer=answer))
             elif r.stderr.strip():
-                tg_send(f"❌ Claude 에러:\n{r.stderr[:1000]}")
+                tg_send(msg("wrapper_ask_error", error=r.stderr[:1000]))
             else:
-                tg_send("🤖 Claude: (빈 응답)")
+                tg_send(msg("wrapper_ask_empty"))
         except subprocess.TimeoutExpired:
-            tg_send("⏰ Claude 응답 시간 초과 (2분)")
+            tg_send(msg("wrapper_ask_timeout"))
         except Exception as e:
-            tg_send(f"❌ Claude 실행 실패: {e}")
+            tg_send(msg("wrapper_ask_fail", error=e))
         return None
 
     return None
@@ -222,7 +209,7 @@ def _is_pid_alive(pid: int) -> bool:
 def _acquire_lock() -> bool:
     if os.path.exists(LOCK_FILE):
         try:
-            with open(LOCK_FILE, "r") as f:
+            with open(LOCK_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             old_pid = data.get("pid", 0)
             if _is_pid_alive(old_pid):
@@ -251,10 +238,9 @@ def _release_lock():
 
 def main():
     if not _acquire_lock():
-        print("이미 래퍼가 실행 중입니다.")
+        print(msg("wrapper_already_running"))
         sys.exit(0)
 
-    global _poll_offset
     fail_count = 0
     notified = False
     start_time = time.time()
@@ -267,11 +253,11 @@ def main():
     log("래퍼 시작")
 
     while True:
-        log(f"supervisor 시작 (fail_count={fail_count})")
+        log(f"teleclaw 시작 (fail_count={fail_count})")
         sv_start = time.time()
 
         # stderr만 파일로 캡처 (capture_output은 자식 프로세스 blocking 유발)
-        stderr_file = os.path.join(LOGS_DIR, "supervisor_stderr.log")
+        stderr_file = os.path.join(LOGS_DIR, "teleclaw_stderr.log")
         with open(stderr_file, "w", encoding="utf-8") as sf:
             proc = subprocess.run(
                 [PYTHON, "-m", "hub"],
@@ -281,14 +267,14 @@ def main():
 
         elapsed = time.time() - sv_start
         exit_code = proc.returncode
-        log(f"supervisor 종료 (exit_code={exit_code}, 생존={elapsed:.0f}초)")
+        log(f"teleclaw 종료 (exit_code={exit_code}, 생존={elapsed:.0f}초)")
 
         # 짧은 시간 반복 재시작 경고 (10분 내 5회 이상)
         now = time.time()
         recent_restarts.append(now)
         recent_restarts = [t for t in recent_restarts if now - t < 600]
         if len(recent_restarts) >= 5:
-            tg_send(f"⚠️ 잦은 재시작 감지: {len(recent_restarts)}회/10분\n마지막 생존: {elapsed:.0f}초, exit_code={exit_code}")
+            tg_send(msg("wrapper_frequent_restart", count=len(recent_restarts), elapsed=elapsed, code=exit_code))
             log(f"잦은 재시작 경고: {len(recent_restarts)}회/10분")
 
         # 비정상 종료 시 stderr 기록
@@ -298,15 +284,15 @@ def main():
                     stderr_content = sf.read().strip()
                 if stderr_content:
                     stderr_tail = stderr_content[-500:]
-                    log(f"supervisor stderr: {stderr_tail}")
+                    log(f"teleclaw stderr: {stderr_tail}")
                     if elapsed < MIN_ALIVE_SEC:
-                        tg_send(f"🔍 supervisor 크래시 stderr:\n{stderr_tail[:1000]}")
+                        tg_send(msg("wrapper_crash_stderr", stderr=stderr_tail[:1000]))
             except Exception:
                 pass
 
         # 기존 인스턴스 실행 중 → 60초 폴링 대기
         if exit_code == EXIT_ALREADY_RUNNING:
-            log("기존 슈퍼바이저 실행 중, 60초 대기")
+            log("기존 TeleClaw 실행 중, 60초 대기")
             result = wait_with_polling(60, fail_count, start_time)
             if result == "kill":
                 return
@@ -327,14 +313,7 @@ def main():
                 or (fail_count > 50 and fail_count % 50 == 0)
             )
             if should_notify:
-                tg_send(
-                    f"⚠️ 슈퍼바이저 비정상 종료\n"
-                    f"생존시간: {elapsed:.0f}초\n"
-                    f"exit_code: {exit_code}\n"
-                    f"연속 실패: {fail_count}회\n"
-                    f"다음 재시도: {wait}초 후\n"
-                    f"비상 명령: /help"
-                )
+                tg_send(msg("wrapper_crash", elapsed=elapsed, code=exit_code, fails=fail_count, wait=wait))
                 notified = True
                 log("텔레그램 알림 전송")
 

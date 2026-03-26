@@ -54,8 +54,8 @@ def main():
         log("json error")
         return
 
-    if not is_supervised_session(data.get("session_id")):
-        log("not supervised")
+    if is_supervised_session(data.get("session_id")):
+        log("supervised → teleclaw handles ResultMessage")
         return
 
     if should_skip(data):

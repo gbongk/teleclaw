@@ -1,7 +1,6 @@
 """python -m hub 지원"""
 
-import asyncio
-from .supervisor import main
+from . import main
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

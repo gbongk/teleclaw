@@ -1,5 +1,5 @@
 """
-텔레그램 슈퍼바이저 — Claude Code SDK 기반 텔레그램 봇
+TeleClaw — Claude Code SDK 기반 텔레그램 봇
 텔레그램 메시지 수신 → SDK query → 응답 → 텔레그램 전송.
 health check, 재시작, 상태 관리, watchdog 통합.
 """
@@ -35,22 +35,21 @@ def _patched_parse(data):
 _mp.parse_message = _patched_parse
 
 from .config import (
-    PROJECTS, CHAT_ID, SUPERVISOR_DIR, LOGS_DIR, LOG_FILE,
+    PROJECTS, CHAT_ID, ALLOWED_USERS, SUPERVISOR_DIR, LOGS_DIR, LOG_FILE,
     STATUS_FILE, SESSION_IDS_FILE, DATA_DIR, TELEGRAM_DIR,
     HEALTH_CHECK_INTERVAL, STUCK_THRESHOLD,
     MAX_RESTARTS_PER_WINDOW, RESTART_WINDOW,
-    SESSION_RESET_QUERIES, SESSION_RESET_HOURS,
     AUTO_RESUME_ENABLED, AUTO_RESUME_MODE, AUTO_RESUME_PROMPTS,
 )
-from .logging_utils import log, _find_existing_supervisor, _write_lock, _release_lock
-from .telegram_api import _notify_all
+from .logging_utils import log, _find_existing_teleclaw, _write_lock, _release_lock
 from .channel_telegram import TelegramChannel
 from .session import SessionState
 from .commands import handle_command, _get_usage
+from .messages import msg
 from . import state_db as db
 
 
-class Supervisor:
+class TeleClaw:
     def __init__(self):
         self.sessions: dict[str, SessionState] = {}
         self._shutdown = False
@@ -62,13 +61,11 @@ class Supervisor:
         self._last_msg_map: dict[str, float] = {}  # 중복 메시지 제거용
         self._ask_client: ClaudeSDKClient | None = None
         self._ask_busy = False
-        self._fresh_start = True  # 슈퍼바이저 프로세스 시작 직후 (개별 세션 재시작과 구분)
+        self._fresh_start = True  # TeleClaw 프로세스 시작 직후 (개별 세션 재시작과 구분)
 
     async def start(self):
-        log("슈퍼바이저 시작")
+        log("TeleClaw 시작")
         db.init()
-        _notify_all("[HUB] 슈퍼바이저 시작")
-
         # 세션 초기화
         for name, config in PROJECTS.items():
             state = SessionState(name=name, config=config)
@@ -89,6 +86,9 @@ class Supervisor:
         for state in self.sessions.values():
             state.channel.set_ahttp(self._ahttp)
 
+        # 시작 알림 (채널 초기화 후)
+        self._broadcast_sync(msg("sv_start"))
+
         # 폴링 + 유틸리티 루프 즉시 시작 (연결 전에도 메시지 수신 가능)
         tasks = []
         for name, state in self.sessions.items():
@@ -105,7 +105,7 @@ class Supervisor:
             await self._connect_session(state)
             if state.connected:
                 await self._wait_mcp_ready(state, timeout=5)
-                state.channel.send_sync("[SV] 시작 완료 — 메시지 수신 준비됨", notify=True)
+                state.channel.send_sync(msg("sv_ready"), notify=True)
                 log(f"{state.name}: 세션 루프 즉시 시작")
 
         await asyncio.gather(
@@ -121,17 +121,17 @@ class Supervisor:
 
         connected = [n for n, s in self.sessions.items() if s.connected]
         elapsed = int(time.time() - self._start_time)
-        await self._broadcast(f"[HUB] 초기화 완료 ({elapsed}초) — {', '.join(connected)} 연결됨")
+        await self._broadcast(msg("sv_init_done", elapsed=elapsed, names=', '.join(connected)))
         log("모든 루프 시작됨")
 
-        # 슈퍼바이저 시작 시에는 자동 재개 안 함
+        # TeleClaw 시작 시에는 자동 재개 안 함
         # (세션이 아직 불안정할 수 있고, was_busy_before_restart도 없음)
         self._fresh_start = False
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for i, r in enumerate(results):
             if isinstance(r, BaseException):
                 log(f"task[{i}] 에러로 종료: {r}")
-                await self._broadcast(f"[HUB] task[{i}] 에러: {r}")
+                await self._broadcast(msg("sv_task_error", i=i, error=r))
 
 
     async def _safe_disconnect(self, client, name: str):
@@ -191,7 +191,7 @@ class Supervisor:
             state.query_count = 0
             state.last_restart_mode = mode
             log(f"{state.name}: SDK 세션 연결 완료 (mode={mode})")
-            state.channel.send_sync(f"[SV] {state.name}: 연결 완료", notify=True)
+            state.channel.send_sync(msg("sv_connected", name=state.name), notify=True)
         except Exception as e:
             if mode != "reset":
                 log(f"{state.name}: {mode} 실패 ({e}), reset 모드로 재시도")
@@ -258,14 +258,14 @@ class Supervisor:
         """ask 명령 비동기 처리."""
         ch = self._channel_by_token(bot_token)
         if self._ask_busy:
-            ch.send_sync("[SV] /ask 처리 중입니다. 잠시 후 다시 시도하세요.")
+            ch.send_sync(msg("ask_busy"))
             return
         self._ask_busy = True
         try:
             if not await self._ensure_ask_client():
-                ch.send_sync("[SV] ask 세션 연결 실패")
+                ch.send_sync(msg("ask_connect_fail"))
                 return
-            ch.send_sync("[SV] 질문 중...")
+            ch.send_sync(msg("ask_processing"))
             await self._ask_client.query(question)
             answer_parts = []
             async for msg in self._ask_client.receive_messages():
@@ -280,10 +280,10 @@ class Supervisor:
             answer = "\n".join(answer_parts) if answer_parts else "(빈 응답)"
             if len(answer) > 3900:
                 answer = answer[:3900] + "\n... (잘림)"
-            ch.send_sync(f"[SV] Claude:\n{answer}")
+            ch.send_sync(msg("ask_response", answer=answer))
         except Exception as e:
             log(f"ask 처리 실패: {e}")
-            ch.send_sync(f"[SV] ask 오류: {e}")
+            ch.send_sync(msg("ask_error", error=e))
             # 세션 초기화
             self._ask_client = None
         finally:
@@ -300,17 +300,17 @@ class Supervisor:
             oldest = min(state.restart_history) if state.restart_history else now
             wait_remaining = int(RESTART_WINDOW - (now - oldest))
             if wait_remaining > 0:
-                msg = f"[WARN] {state.name}: 재시작 한도 초과 ({MAX_RESTARTS_PER_WINDOW}회/{RESTART_WINDOW//60}분)\n사유: {reason}\n{wait_remaining}초 후 자동 재시도"
-                log(msg)
+                limit_msg = msg("restart_limit", name=state.name, max=MAX_RESTARTS_PER_WINDOW, window=RESTART_WINDOW//60, reason=reason, remaining=wait_remaining)
+                log(limit_msg)
                 if now - state.last_notify_time > 300:
-                    self._broadcast_sync(msg)
+                    self._broadcast_sync(limit_msg)
                     state.last_notify_time = now
                 return
 
         state.restarting = True
         try:
             log(f"{state.name}: 재시작 시도 (사유: {reason})")
-            state.channel.send_sync(f"[SV] {state.name}: {reason} → 재시작")
+            state.channel.send_sync(msg("restart_reason", name=state.name, reason=reason))
 
             # 재시작 전 상태 기록 (STUCK은 busy 강제)
             state.was_busy_before_restart = state.busy or "STUCK" in reason
@@ -332,10 +332,10 @@ class Supervisor:
             state.restart_count += 1
             self._write_status()
             if state.connected:
-                state.channel.send_sync("[SV] {}: 재시작 완료, 메시지 수신 준비됨".format(state.name), notify=True)
+                state.channel.send_sync(msg("restart_done", name=state.name), notify=True)
 
                 # auto-resume: 세션 개별 재시작 시에만
-                # reset(new) 또는 슈퍼바이저 초기 시작 시에는 스킵 (start()에서 check 모드로 처리)
+                # reset(new) 또는 TeleClaw 초기 시작 시에는 스킵 (start()에서 check 모드로 처리)
                 if mode != "new" and not self._fresh_start and AUTO_RESUME_ENABLED and not no_resume and state.message_queue.empty():
                     # 세션 개별 재시작 → 설정된 모드(resume/check) 사용
                     effective_mode = AUTO_RESUME_MODE
@@ -359,9 +359,9 @@ class Supervisor:
             try:
                 await asyncio.sleep(1)
 
-                # supervisor 자체 재시작 체크 (DB + flag 듀얼)
-                sv_cmd = db.pop_command("supervisor")
-                sv_flag = Path(TELEGRAM_DIR) / "restart_request_supervisor.flag"
+                # teleclaw 자체 재시작 체크 (DB + flag 듀얼)
+                sv_cmd = db.pop_command("teleclaw")
+                sv_flag = Path(TELEGRAM_DIR) / "restart_request_teleclaw.flag"
                 if sv_cmd or sv_flag.exists():
                     mode = "resume"
                     force = False
@@ -377,14 +377,14 @@ class Supervisor:
                     cooldown = 300  # 5분
                     elapsed = time.time() - self._start_time
                     if not force and elapsed < cooldown:
-                        log(f"supervisor 자체 재시작 flag 무시 (쿨다운: {int(cooldown - elapsed)}초 남음)")
+                        log(f"teleclaw 자체 재시작 flag 무시 (쿨다운: {int(cooldown - elapsed)}초 남음)")
                     else:
                         # busy 세션은 no_resume 마킹 (auto-resume 루프 방지)
                         self._save_session_ids(no_resume_if_busy=True)
                         # busy 세션이 있으면 완료 대기 (최대 60초)
                         busy_sessions = [n for n, s in self.sessions.items() if s.busy]
                         if busy_sessions and not force:
-                            log(f"supervisor 자체 재시작 flag 감지 — busy 세션 대기: {', '.join(busy_sessions)}")
+                            log(f"teleclaw 자체 재시작 flag 감지 — busy 세션 대기: {', '.join(busy_sessions)}")
                             waited = 0
                             while waited < 60:
                                 await asyncio.sleep(2)
@@ -394,8 +394,8 @@ class Supervisor:
                                     break
                             if busy_sessions:
                                 log(f"graceful 대기 60초 초과, 강제 종료 (busy: {', '.join(busy_sessions)})")
-                        log(f"supervisor 자체 재시작 flag 감지 (mode={mode}, force={force}) → 프로세스 종료")
-                        await self._broadcast(f"[HUB] 자체 재시작 요청 (mode={mode})")
+                        log(f"teleclaw 자체 재시작 flag 감지 (mode={mode}, force={force}) → 프로세스 종료")
+                        await self._broadcast(msg("sv_self_restart", mode=mode))
                         self._shutdown = True
                         os._exit(0)  # wrapper가 자동 재시작
 
@@ -517,7 +517,7 @@ class Supervisor:
 
     def _save_session_ids(self, no_resume_if_busy=False):
         """session_id + busy 상태를 파일에 저장 (재시작 시 복원용).
-        no_resume_if_busy=True: 슈퍼바이저 자체 재시작 시, busy 세션은 no_resume 마킹."""
+        no_resume_if_busy=True: TeleClaw 자체 재시작 시, busy 세션은 no_resume 마킹."""
         data = {}
         for name, state in self.sessions.items():
             entry = {}
@@ -605,7 +605,7 @@ class Supervisor:
         t.start()
 
     def _handle_command(self, text: str, bot_token: str) -> bool:
-        """슈퍼바이저 명령어 처리. 처리했으면 True 반환."""
+        """TeleClaw 명령어 처리. 처리했으면 True 반환."""
         ch = self._channel_by_token(bot_token)
         return handle_command(self, text, bot_token, ch)
 
@@ -723,7 +723,7 @@ class Supervisor:
 
     def _should_auto_resume(self, state: SessionState) -> bool:
         """자동 재개 여부를 판단."""
-        # no_resume 마킹 (슈퍼바이저/flag 재시작 시 busy였던 세션 → 루프 방지)
+        # no_resume 마킹 (TeleClaw/flag 재시작 시 busy였던 세션 → 루프 방지)
         if state.no_resume_before_restart:
             log(f"{state.name}: no_resume 마킹 → 자동 재개 스킵 (루프 방지)")
             state.no_resume_before_restart = False
@@ -739,16 +739,14 @@ class Supervisor:
         # resume_count 초과
         if state.resume_count >= 2:
             log(f"{state.name}: 자동 재개 {state.resume_count}회 초과 → 중단")
-            state.channel.send_sync(
-                f"\u26a0\ufe0f {state.name}: 자동 재개 2회 실패, 중단했습니다. 수동 확인 필요."
-            )
+            state.channel.send_sync(msg("auto_resume_fail", name=state.name))
             state.resume_count = 0
             return False
         return True
 
     async def _session_loop(self, state: SessionState):
         # auto-resume은 세션 개별 재시작(_restart_session)에서만 처리
-        # 슈퍼바이저 초기 시작 시에는 대기 모드
+        # TeleClaw 초기 시작 시에는 대기 모드
         log(f"{state.name}: 세션 루프 시작 — 대기 모드")
         _idle_count = 0
 
@@ -777,9 +775,7 @@ class Supervisor:
                     await asyncio.sleep(2)
                 else:
                     log(f"{state.name}: client 없음, 재시도 소진 (10회/20초) → 메시지 드롭")
-                    state.channel.send_sync(
-                        f"❌ 세션 초기화 실패, 메시지 처리 불가\n원본: {msg_data['text'][:200]}"
-                    )
+                    state.channel.send_sync(msg("session_init_fail", text=msg_data['text'][:200]))
                 continue
 
             if not state.connected:
@@ -792,9 +788,7 @@ class Supervisor:
                         log(f"{state.name}: 세션 미연결, 재시도 큐잉 ({retry+1}/1)")
                         await asyncio.sleep(2)
                     else:
-                        state.channel.send_sync(
-                            f"❌ 세션 연결 실패, 메시지 처리 불가\n원본: {msg_data['text'][:200]}"
-                        )
+                        state.channel.send_sync(msg("session_connect_fail", text=msg_data['text'][:200]))
                     continue
 
             was_queued = msg_data.get("retry_count", 0) > 0 or msg_data.get("queued_while_busy", False)
@@ -810,9 +804,7 @@ class Supervisor:
 
             # 대기 중이던 메시지 처리 시 구분선 전송 (이전 응답과 혼동 방지)
             if was_queued and not is_auto_resume:
-                await state.channel.send(
-                    f"── 대기 메시지 처리 ──\n💬 {text[:100]}"
-                )
+                await state.channel.send(msg("pending_message", text=text[:100]))
 
             log(f"{state.name}: 메시지 처리 시작: {text[:50]}")
             # 처리 시작 알림은 수신 확인(✔️)으로 대체됨
@@ -822,6 +814,8 @@ class Supervisor:
                 if not client:
                     continue
                 # 버퍼 드레인: query() 전에 이전 턴의 잔여 메시지 제거 (N턴 밀림 방지)
+                # NOTE: SDK private 속성(_query, _message_receive)에 직접 접근.
+                # SDK 업데이트 시 깨질 수 있으므로, 버전 업 후 확인 필요.
                 drain_count = 0
                 drain_types = []
                 try:
@@ -868,9 +862,7 @@ class Supervisor:
                         log(f"{state.name}: 타임아웃 재시도 큐잉 ({retry+1}/2)")
                         await asyncio.sleep((retry + 1) * 2)
                     else:
-                        state.channel.send_sync(
-                            f"❌ 응답 타임아웃 (재시도 소진)\n원본: {msg_data['text'][:200]}"
-                        )
+                        state.channel.send_sync(msg("timeout_exhausted", text=msg_data['text'][:200]))
                     state.busy = False
                     continue
 
@@ -902,9 +894,7 @@ class Supervisor:
                     elapsed = time.time() - state.busy_since
                     if elapsed > 120 and time.time() - last_progress_notify > 120:
                         mins = int(elapsed / 60)
-                        await ch.send(
-                            f"⏳ 아직 처리 중... ({mins}분 경과, 도구 {msg_count}회 호출)"
-                        )
+                        await ch.send(msg("still_processing", mins=mins, tools=msg_count))
                         last_progress_notify = time.time()
                     msg_count += 1
 
@@ -1071,6 +1061,12 @@ class Supervisor:
                             self._save_session_ids()
                         if msg.usage:
                             log(f"{state.name}: [usage] {msg.usage}")
+                        # 라이브 스트리밍이 비었으면 ResultMessage.result로 폴백
+                        if not live_lines and msg.result:
+                            result_text = msg.result.strip()
+                            if result_text:
+                                live_lines.append(result_text)
+                                log(f"{state.name}: [result-fallback] {len(result_text)}자")
                         break
 
                 # 최종 업데이트 (HTML 변환 적용)
@@ -1099,12 +1095,12 @@ class Supervisor:
                     log(f"{state.name}: 최종 전송 ({len(content)}자, {len(chunks)}청크, {elapsed:.1f}s)")
                 else:
                     log(f"{state.name}: 빈 응답")
-                    await ch.send("⚠️ 빈 응답")
+                    await ch.send(msg("empty_response"))
 
                 log(f"{state.name}: 처리 완료")
 
                 # 처리 완료 알림 (새 메시지, 알림 옴)
-                asyncio.create_task(ch.send("✅"))
+                asyncio.create_task(ch.send("✓"))
 
                 # 처리 완료 후 offset 확정 (재시작 시 미처리 메시지 재수신 보장)
                 processed_update_id = msg_data.get("update_id", 0)
@@ -1134,9 +1130,7 @@ class Supervisor:
                 # 이미지 누적 에러 → 자동 reset (resume으로는 해결 불가)
                 if "dimension limit" in err_str or "many-image" in err_str:
                     log(f"{state.name}: 이미지 누적 에러 감지 → reset 모드 재시작")
-                    state.channel.send_sync(
-                        "⚠️ 이미지 누적으로 컨텍스트 초과\n자동 reset 진행"
-                    )
+                    state.channel.send_sync(msg("image_overflow"))
                     await self._restart_session(state, "이미지 누적 에러", mode="reset", force=True)
                     continue
 
@@ -1154,9 +1148,7 @@ class Supervisor:
                         log(f"{state.name}: 에러 재시도 큐잉 ({retry+1}/1)")
                         await asyncio.sleep(2)
                     else:
-                        state.channel.send_sync(
-                            f"❌ 처리 실패: {e}\n원본: {msg_data['text'][:200]}"
-                        )
+                        state.channel.send_sync(msg("process_fail", error=e, text=msg_data['text'][:200]))
                 if state.error_count >= 3:
                     await self._restart_session(state, f"연속 에러 {state.error_count}회")
             finally:
@@ -1201,7 +1193,8 @@ class Supervisor:
                     msg_id_str = m["id"]
                     msg_id = int(msg_id_str) if msg_id_str else 0
                     from_id = m.get("from_id", "")
-                    if from_id and from_id != CHAT_ID:
+                    if from_id and str(from_id) not in ALLOWED_USERS:
+                        log(f"{name}: 미허용 사용자 메시지 무시 (from_id={from_id})")
                         continue
                     msg_date = m.get("date", 0)
                     if msg_date < self._start_time:
@@ -1271,22 +1264,17 @@ class Supervisor:
                             db.set_paused(name, False)
                             mode = "reset" if "reset" in text_lower or "리셋" in text_lower else "resume"
                             db.push_command(name, "restart", f"force,{mode}" if mode != "resume" else "force")
-                            await ch.send(f"▶️ {name} pause 해제 + 재시작 요청됨", reply_to=msg_id_str)
+                            await ch.send(msg("pause_unpause_restart", name=name), reply_to=msg_id_str)
                             self._save_offset(bot_id, ch.get_offset() - 1)
                             log(f"{name}: PAUSED → 해제 (텔레그램 명령: {text_lower})")
                             continue
-                        await ch.send(f"⏸️ {name} 일시정지 중. restart 또는 reset을 입력하세요.", reply_to=msg_id_str)
+                        await ch.send(msg("paused_hint", name=name), reply_to=msg_id_str)
                         self._save_offset(bot_id, ch.get_offset() - 1)
                         log(f"{name}: PAUSED — 메시지 거부: {text[:50]}")
                         continue
 
-                    # 수신 확인 (큐 투입 전에 보내서 응답보다 먼저 도착 보장)
-                    if state.busy:
-                        qsize = state.message_queue.qsize() + 1
-                        ack = f"✔️ (처리 중, 대기 {qsize}건)"
-                    else:
-                        ack = "✔️"
-                    await ch.send(ack, reply_to=msg_id_str)
+                    # 수신 확인
+                    await ch.send("💭...")
 
                     # update_id 추적 (channel.poll이 offset 자동 관리하므로 현재 offset - 1)
                     update_id = ch.get_offset() - 1
@@ -1314,7 +1302,7 @@ class Supervisor:
 
     async def shutdown(self):
         self._shutdown = True
-        self._broadcast_sync("[HUB] 슈퍼바이저 종료 중...")
+        self._broadcast_sync(msg("sv_shutting_down"))
         if self._ahttp:
             await self._ahttp.aclose()
         # ask 클라이언트 정리
@@ -1329,20 +1317,20 @@ class Supervisor:
             state.connected = False
         self._write_status()
         _release_lock()
-        log("슈퍼바이저 종료")
+        log("TeleClaw 종료")
 
 
 async def main():
     os.makedirs(LOGS_DIR, exist_ok=True)
 
-    existing_pid = _find_existing_supervisor()
+    existing_pid = _find_existing_teleclaw()
     if existing_pid:
-        log(f"이미 실행 중인 슈퍼바이저 있음 (PID={existing_pid}), 종료")
-        print(f"이미 슈퍼바이저가 실행 중입니다 (PID={existing_pid}).")
+        log(f"이미 실행 중인 TeleClaw 있음 (PID={existing_pid}), 종료")
+        print(f"이미 TeleClaw가 실행 중입니다 (PID={existing_pid}).")
         sys.exit(42)  # wrapper가 중복 실행 감지용 코드로 인식
 
     _write_lock()
-    hub = Supervisor()
+    hub = TeleClaw()
     hub._start_watchdog_thread()
 
     def on_signal(sig, frame):

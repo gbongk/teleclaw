@@ -61,6 +61,13 @@ _cfg = _load_yaml(_CONFIG_PATH)
 # --- 프로젝트 설정 ---
 
 CHAT_ID = _cfg.get("chat_id", "")
+LANG = _cfg.get("lang", "ko")
+
+# 허용된 사용자 ID 목록 (비어있으면 CHAT_ID만 허용)
+_allowed_raw = _cfg.get("allowed_users", "")
+ALLOWED_USERS = set(uid.strip() for uid in _allowed_raw.split(",") if uid.strip()) if _allowed_raw else set()
+if CHAT_ID:
+    ALLOWED_USERS.add(CHAT_ID)
 
 PROJECTS = {}
 for name, info in _cfg.get("projects", {}).items():
@@ -76,8 +83,8 @@ for name, info in _cfg.get("projects", {}).items():
 
 SUPERVISOR_DIR = _SUPERVISOR_DIR
 LOGS_DIR = os.path.join(SUPERVISOR_DIR, "logs")
-LOG_FILE = os.path.join(LOGS_DIR, "supervisor.log")
-LOCK_FILE = os.path.join(LOGS_DIR, "supervisor.lock")
+LOG_FILE = os.path.join(LOGS_DIR, "teleclaw.log")
+LOCK_FILE = os.path.join(LOGS_DIR, "teleclaw.lock")
 STATUS_FILE = os.path.join(LOGS_DIR, "hub_status.json")
 SESSION_IDS_FILE = os.path.join(LOGS_DIR, "session_ids.json")
 DATA_DIR = os.path.join(SUPERVISOR_DIR, "data")
@@ -90,8 +97,6 @@ HEALTH_CHECK_INTERVAL = 120  # 2분
 STUCK_THRESHOLD = 1800  # 30분
 MAX_RESTARTS_PER_WINDOW = 3
 RESTART_WINDOW = 1800  # 30분
-SESSION_RESET_QUERIES = 100
-SESSION_RESET_HOURS = 6
 AUTO_RESUME_ENABLED = True
 
 AUTO_RESUME_MODE = "resume"

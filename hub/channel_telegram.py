@@ -131,7 +131,29 @@ class TelegramChannel(Channel):
                                use_html=use_markup, notify=notify)
         return str(mid)
 
-    # --- 파일 ---
+    # --- 파일 전송 ---
+
+    async def send_photo(self, file_path: str, caption: str = "") -> str:
+        if not self._ahttp:
+            return ""
+        mid = await tg.async_send_photo(self._ahttp, self._bot_token, file_path, caption)
+        return str(mid)
+
+    async def send_file(self, file_path: str, caption: str = "") -> str:
+        if not self._ahttp:
+            return ""
+        mid = await tg.async_send_file(self._ahttp, self._bot_token, file_path, caption)
+        return str(mid)
+
+    def send_photo_sync(self, file_path: str, caption: str = "") -> str:
+        mid = tg.send_photo_sync(self._bot_token, file_path, caption)
+        return str(mid)
+
+    def send_file_sync(self, file_path: str, caption: str = "") -> str:
+        mid = tg.send_file_sync(self._bot_token, file_path, caption)
+        return str(mid)
+
+    # --- 파일 다운로드 ---
 
     async def download_file(self, file_ref: str) -> bytes:
         if not self._ahttp:

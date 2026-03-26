@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-슈퍼바이저 전체 Smoke Test (#1~#45) — 비파괴 검증.
+TeleClaw 전체 Smoke Test (#1~#45) — 비파괴 검증.
 실행: python tests/test_smoke_all.py
 """
 
@@ -18,10 +18,10 @@ SUPERVISOR_DIR = os.path.dirname(os.path.dirname(__file__))
 LOGS_DIR = os.path.join(SUPERVISOR_DIR, "logs")
 DATA_DIR = os.path.join(SUPERVISOR_DIR, "data")
 STATUS_FILE = os.path.join(LOGS_DIR, "hub_status.json")
-LOG_FILE = os.path.join(LOGS_DIR, "supervisor.log")
+LOG_FILE = os.path.join(LOGS_DIR, "teleclaw.log")
 WRAPPER_LOG = os.path.join(LOGS_DIR, "wrapper.log")
 SESSION_IDS_FILE = os.path.join(LOGS_DIR, "session_ids.json")
-LOCK_FILE = os.path.join(LOGS_DIR, "supervisor.lock")
+LOCK_FILE = os.path.join(LOGS_DIR, "teleclaw.lock")
 
 passed = 0
 failed = 0
@@ -55,13 +55,13 @@ def read_text(path):
 
 
 def read_code():
-    sv_path = os.path.join(SUPERVISOR_DIR, "hub", "supervisor.py")
+    sv_path = os.path.join(SUPERVISOR_DIR, "hub", "teleclaw.py")
     with open(sv_path, "r", encoding="utf-8") as f:
         return f.read()
 
 
 def read_wrapper_code():
-    wp_path = os.path.join(SUPERVISOR_DIR, "supervisor-wrapper.py")
+    wp_path = os.path.join(SUPERVISOR_DIR, "teleclaw-wrapper.py")
     with open(wp_path, "r", encoding="utf-8") as f:
         return f.read()
 
@@ -93,9 +93,9 @@ test("PID 기록", status.get("pid", 0) > 0, f"pid={status.get('pid')}")
 try:
     r = subprocess.run(["tasklist", "/FI", f"PID eq {status['pid']}", "/NH"],
                        capture_output=True, text=True, timeout=5)
-    test("supervisor 프로세스 존재", str(status["pid"]) in r.stdout)
+    test("teleclaw 프로세스 존재", str(status["pid"]) in r.stdout)
 except Exception as e:
-    skip("supervisor 프로세스 존재", str(e))
+    skip("teleclaw 프로세스 존재", str(e))
 test(f"{len(sessions)}개 세션 존재", len(sessions) >= 3, f"count={len(sessions)}")
 for name, s in sessions.items():
     test(f"{name} connected=true", s["connected"])
@@ -135,13 +135,13 @@ else:
     skip("재시작 이력", "현재 로그에 없음")
 
 # ==========================================================
-# #5: 슈퍼바이저 자체 재시작
+# #5: TeleClaw 자체 재시작
 # ==========================================================
-print("\n#5: 슈퍼바이저 자체 재시작")
+print("\n#5: TeleClaw 자체 재시작")
 test("restart_request_supervisor.flag 감지", "restart_request_supervisor" in sv_code)
 test("os._exit(0) 호출로 wrapper 재시작 유도", "os._exit(0)" in sv_code)
 # wrapper 로그에서 재시작 이력
-wrapper_restarts = wrapper_log.count("supervisor 시작")
+wrapper_restarts = wrapper_log.count("teleclaw 시작")
 test(f"wrapper 재시작 이력 {wrapper_restarts}건", wrapper_restarts > 0)
 
 # ==========================================================
@@ -285,11 +285,11 @@ test("traceback 포함", "traceback" in sv_code)
 print("\n#22: 세션 병렬 연결")
 test("asyncio.gather로 병렬 연결", "asyncio.gather" in sv_code)
 test("return_exceptions=True", "return_exceptions=True" in sv_code)
-# 로그에서 연결 시간 분석 — "슈퍼바이저 시작" 이후의 연결만 추출
+# 로그에서 연결 시간 분석 — "TeleClaw 시작" 이후의 연결만 추출
 lines = log_content.split("\n")
 last_start_idx = -1
 for i, l in enumerate(lines):
-    if "슈퍼바이저 시작" in l:
+    if "TeleClaw 시작" in l:
         last_start_idx = i
 if last_start_idx >= 0:
     recent_lines = lines[last_start_idx:]
@@ -352,11 +352,11 @@ if disc_errors and disc_terminates:
 # ==========================================================
 print("\n#24: wrapper crash stderr 캡처 (파일 리다이렉트)")
 test("메인 실행에 capture_output 미사용", "stderr=sf" in wp_code)
-test("stderr 파일 리다이렉트", "supervisor_stderr.log" in wp_code)
-test("stderr 로그 기록", "supervisor stderr:" in wp_code)
+test("stderr 파일 리다이렉트", "teleclaw_stderr.log" in wp_code)
+test("stderr 로그 기록", "teleclaw stderr:" in wp_code)
 test("stderr 텔레그램 전송", "크래시 stderr" in wp_code)
 # wrapper 로그에서 실제 stderr 캡처 확인
-stderr_logs = [l for l in wrapper_log.split("\n") if "supervisor stderr:" in l]
+stderr_logs = [l for l in wrapper_log.split("\n") if "teleclaw stderr:" in l]
 test(f"wrapper stderr 캡처 이력 {len(stderr_logs)}건", True)
 if stderr_logs:
     print(f"    최근: {stderr_logs[-1].strip()[:100]}")
@@ -367,14 +367,14 @@ if stderr_logs:
 print("\n#46: wrapper 재시작 blocking 방지")
 test("stderr 파일 리다이렉트 (stdout 캡처 안 함)", "stderr=sf" in wp_code)
 test("메인 실행 stdout 비캡처 (blocking 방지)", "stderr=sf" in wp_code)
-# wrapper 로그에서 재시작 즉시성 확인 — "supervisor 종료" 후 "supervisor 시작"까지 시간 차이
+# wrapper 로그에서 재시작 즉시성 확인 — "teleclaw 종료" 후 "teleclaw 시작"까지 시간 차이
 wp_lines = wrapper_log.split("\n")
 restart_pairs = []
 for i, l in enumerate(wp_lines):
-    if "supervisor 종료" in l and "exit_code=0" in l:
-        # 다음 "supervisor 시작" 찾기
+    if "teleclaw 종료" in l and "exit_code=0" in l:
+        # 다음 "teleclaw 시작" 찾기
         for j in range(i+1, min(i+5, len(wp_lines))):
-            if "supervisor 시작" in wp_lines[j]:
+            if "teleclaw 시작" in wp_lines[j]:
                 try:
                     t1 = wp_lines[i].split("]")[0].lstrip("[").strip()
                     t2 = wp_lines[j].split("]")[0].lstrip("[").strip()
@@ -493,11 +493,11 @@ test("텔레그램 경고 전송", "잦은 재시작 감지" in wp_code)
 print("\n#56: 로그 로테이션")
 log_utils = read_text(os.path.join(SUPERVISOR_DIR, "hub", "logging_utils.py"))
 test("_archive_lines 함수", "_archive_lines" in log_utils)
-test("날짜별 파일명", 'supervisor_{date_str}.log' in log_utils or "supervisor_" in log_utils)
+test("날짜별 파일명", 'teleclaw_{date_str}.log' in log_utils or "teleclaw_" in log_utils)
 test("잘린 로그 보관", "_archive_lines(lines[:-500])" in log_utils)
 # 아카이브 파일 존재 확인
 import glob
-archive_files = glob.glob(os.path.join(LOGS_DIR, "supervisor_20*.log"))
+archive_files = glob.glob(os.path.join(LOGS_DIR, "teleclaw_20*.log"))
 if archive_files:
     test(f"아카이브 파일 {len(archive_files)}개", True)
     print(f"    최근: {os.path.basename(archive_files[-1])}")
@@ -520,7 +520,7 @@ test("async_notify_all 함수 존재", "async def async_notify_all" in tg_code)
 test("async_notify_all import", "async_notify_all" in sv_code)
 test("루프 내 비동기 호출", "await async_notify_all" in sv_code)
 # 시작/종료는 동기 유지 확인
-test("시작 알림은 동기 유지", '_notify_all("[HUB] 슈퍼바이저 시작")' in sv_code)
+test("시작 알림은 동기 유지", '_notify_all("[HUB] TeleClaw 시작")' in sv_code)
 
 # ==========================================================
 # #57: 이미지 누적 에러 감지 → 자동 reset

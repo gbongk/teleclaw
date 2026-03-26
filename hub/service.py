@@ -1,0 +1,171 @@
+"""시스템 서비스 등록/해제 — systemd (Linux) / Task Scheduler (Windows)"""
+
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+from .messages import msg
+
+
+def _get_python():
+    return sys.executable
+
+
+def _get_wrapper_path():
+    return str(Path(__file__).resolve().parent.parent / "teleclaw-wrapper.py")
+
+
+def _get_service_dir():
+    return Path(__file__).resolve().parent.parent
+
+
+# --- Linux (systemd) ---
+
+def _systemd_install():
+    service_dir = Path.home() / ".config" / "systemd" / "user"
+    service_dir.mkdir(parents=True, exist_ok=True)
+    service_file = service_dir / "teleclaw.service"
+
+    python = _get_python()
+    wrapper = _get_wrapper_path()
+    work_dir = str(_get_service_dir())
+
+    content = f"""[Unit]
+Description=TeleClaw - Telegram remote control for Claude Code
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart="{python}" "{wrapper}"
+WorkingDirectory={work_dir}
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=teleclaw
+
+[Install]
+WantedBy=default.target
+"""
+    service_file.write_text(content)
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    subprocess.run(["systemctl", "--user", "enable", "teleclaw"], check=True)
+    subprocess.run(["systemctl", "--user", "start", "teleclaw"], check=True)
+    # loginctl enable-linger for auto-start without login
+    user = os.environ.get("USER", "")
+    if user:
+        subprocess.run(["loginctl", "enable-linger", user], capture_output=True)
+    print(f"Installed: {service_file}")
+    print("Commands:")
+    print("  systemctl --user status teleclaw")
+    print("  journalctl --user -u teleclaw -f")
+    print("  systemctl --user stop teleclaw")
+
+
+def _systemd_uninstall():
+    subprocess.run(["systemctl", "--user", "stop", "teleclaw"], capture_output=True)
+    subprocess.run(["systemctl", "--user", "disable", "teleclaw"], capture_output=True)
+    service_file = Path.home() / ".config" / "systemd" / "user" / "teleclaw.service"
+    if service_file.exists():
+        service_file.unlink()
+    subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+    print("Uninstalled: teleclaw.service")
+
+
+def _systemd_status():
+    subprocess.run(["systemctl", "--user", "status", "teleclaw"])
+
+
+def _systemd_logs(n: int = 50):
+    subprocess.run(["journalctl", "--user", "-u", "teleclaw", "-n", str(n), "--no-pager"])
+
+
+# --- Windows (Task Scheduler) ---
+
+def _schtasks_install():
+    python = _get_python()
+    wrapper = _get_wrapper_path()
+    work_dir = str(_get_service_dir())
+    task_name = "TeleClaw"
+
+    # 기존 태스크 제거
+    subprocess.run(
+        ["schtasks", "/delete", "/tn", task_name, "/f"],
+        capture_output=True)
+
+    # 로그인 시 자동 시작
+    subprocess.run([
+        "schtasks", "/create",
+        "/tn", task_name,
+        "/tr", f'"{python}" "{wrapper}"',
+        "/sc", "onlogon",
+        "/rl", "highest",
+        "/f",
+    ], check=True)
+    print(f"Installed: Task Scheduler '{task_name}'")
+    print("Commands:")
+    print(f"  schtasks /query /tn {task_name}")
+    print(f"  schtasks /run /tn {task_name}")
+    print(f"  schtasks /end /tn {task_name}")
+
+    # 즉시 시작
+    subprocess.run(["schtasks", "/run", "/tn", task_name], capture_output=True)
+
+
+def _schtasks_uninstall():
+    task_name = "TeleClaw"
+    subprocess.run(["schtasks", "/end", "/tn", task_name], capture_output=True)
+    subprocess.run(["schtasks", "/delete", "/tn", task_name, "/f"], capture_output=True)
+    print(f"Uninstalled: Task Scheduler '{task_name}'")
+
+
+def _schtasks_status():
+    subprocess.run(["schtasks", "/query", "/tn", "TeleClaw", "/v", "/fo", "list"])
+
+
+def _schtasks_logs(n: int = 50):
+    log_file = _get_service_dir() / "logs" / "teleclaw.log"
+    if not log_file.exists():
+        print("No log file")
+        return
+    lines = log_file.read_text(encoding="utf-8").splitlines()
+    for line in lines[-n:]:
+        print(line)
+
+
+# --- 공통 인터페이스 ---
+
+def install():
+    """시스템 서비스 등록 + 자동 시작."""
+    if sys.platform == "win32":
+        _schtasks_install()
+    else:
+        _systemd_install()
+
+
+def uninstall():
+    """시스템 서비스 해제."""
+    if sys.platform == "win32":
+        _schtasks_uninstall()
+    else:
+        _systemd_uninstall()
+
+
+def status():
+    """서비스 상태 확인."""
+    if sys.platform == "win32":
+        _schtasks_status()
+    else:
+        _systemd_status()
+
+
+def logs(n: int = 50):
+    """서비스 로그 조회."""
+    if sys.platform == "win32":
+        _schtasks_logs(n)
+    else:
+        _systemd_logs(n)

@@ -1,7 +1,9 @@
-"""슈퍼바이저 명령어 핸들러"""
+"""TeleClaw 명령어 핸들러"""
 
 import asyncio
 import json
+import os
+import sys
 import time
 from pathlib import Path
 
@@ -9,6 +11,7 @@ from .config import (
     SUPERVISOR_DIR, LOGS_DIR, LOG_FILE, TELEGRAM_DIR,
 )
 from .logging_utils import log
+from .messages import msg
 from . import state_db as db
 
 
@@ -17,10 +20,10 @@ async def _do_interrupt(state, name: str, channel):
     try:
         await state.client.interrupt()
         log(f"{name}: interrupt 완료")
-        channel.send_sync(f"[SV] {name}: 작업 중단됨")
+        channel.send_sync(msg("interrupted", name=name))
     except Exception as e:
         log(f"{name}: interrupt 실패: {e}")
-        channel.send_sync(f"[SV] {name}: interrupt 실패 ({e})")
+        channel.send_sync(msg("interrupt_fail", name=name, error=e))
 
 
 def _find_session_by_token(sessions: dict, bot_token: str) -> str | None:
@@ -53,7 +56,7 @@ def _get_usage(http_client) -> str:
         creds = json.loads(cred_path.read_text(encoding="utf-8"))
         token = creds["claudeAiOauth"]["accessToken"]
     except Exception as e:
-        return f"[SV] 사용량 조회 실패: credentials 읽기 에러 ({e})"
+        return msg("usage_fail_cred", error=e)
 
     # API 호출
     try:
@@ -66,10 +69,10 @@ def _get_usage(http_client) -> str:
             timeout=10,
         )
         if r.status_code != 200:
-            return f"[SV] 사용량 조회 실패: HTTP {r.status_code}"
+            return msg("usage_fail_http", code=r.status_code)
         data = r.json()
     except Exception as e:
-        return f"[SV] 사용량 조회 실패: {e}"
+        return msg("usage_fail", error=e)
 
     from .usage_fmt import usage_bar as _bar, reset_str as _reset_str
 
@@ -78,7 +81,7 @@ def _get_usage(http_client) -> str:
     sonnet = data.get("seven_day_sonnet", {})
     opus = data.get("seven_day_opus", {})
 
-    lines = ["[SV] Claude 사용량"]
+    lines = [msg("usage_header")]
     lines.append("")
 
     if five.get("utilization") is not None:
@@ -103,7 +106,7 @@ def _get_usage(http_client) -> str:
     return text
 
 
-def handle_command(supervisor, text: str, bot_token: str, channel) -> bool:
+def handle_command(teleclaw, text: str, bot_token: str, channel) -> bool:
     """텔레그램 메시지가 /로 시작할 때 호출. 처리했으면 True 반환.
 
     지원 명령: /status, /esc, /pause, /restart, /reset, /log, /usage, /sys, /ask, /help
@@ -117,16 +120,16 @@ def handle_command(supervisor, text: str, bot_token: str, channel) -> bool:
     arg = parts[1].strip() if len(parts) > 1 else ""
 
     if cmd in ("/stop", "/shutdown", "/kill"):
-        channel.send_sync("[SV] 슈퍼바이저 종료는 채팅방에서 불가합니다.")
+        channel.send_sync(msg("shutdown_not_allowed"))
         return True
 
     if cmd in ("/status", "/s"):
         now = time.time()
-        uptime = int(now - supervisor._start_time)
+        uptime = int(now - teleclaw._start_time)
         h, m = uptime // 3600, (uptime % 3600) // 60
-        lines = [f"[SV] 가동 {h}시간 {m}분"]
-        for name, state in supervisor.sessions.items():
-            status = supervisor._assess_health(state)
+        lines = [msg("status_header", h=h, m=m)]
+        for name, state in teleclaw.sessions.items():
+            status = teleclaw._assess_health(state)
             lines.append(
                 f"  {name}: {status} | Q={state.query_count} E={state.error_count} R={state.restart_count}"
             )
@@ -140,24 +143,24 @@ def handle_command(supervisor, text: str, bot_token: str, channel) -> bool:
             name = parts[0]
             no_resume = "noresume" in parts[1:]
         else:
-            name = _find_session_by_token(supervisor.sessions, bot_token)
-        if name and name.lower() == "supervisor":
-            channel.send_sync("[SV] 슈퍼바이저 재시작합니다...")
-            db.push_command("supervisor", "restart", "force")
-            Path(TELEGRAM_DIR).joinpath("restart_request_supervisor.flag").write_text("force")
+            name = _find_session_by_token(teleclaw.sessions, bot_token)
+        if name and name.lower() == "teleclaw":
+            channel.send_sync(msg("sv_restart_requested"))
+            db.push_command("teleclaw", "restart", "force")
+            Path(TELEGRAM_DIR).joinpath("restart_request_teleclaw.flag").write_text("force")
             return True
-        if name and name in supervisor.sessions:
+        if name and name in teleclaw.sessions:
             # pause 해제 (DB + flag)
             db.set_paused(name, False)
             pause_flag = Path(TELEGRAM_DIR) / f"pause_{name}.flag"
             if pause_flag.exists():
                 pause_flag.unlink(missing_ok=True)
                 log(f"{name}: pause 해제됨 (/restart 명령)")
-            asyncio.create_task(supervisor._restart_session(supervisor.sessions[name], "/restart 명령", mode="resume", force=True, no_resume=no_resume))
+            asyncio.create_task(teleclaw._restart_session(teleclaw.sessions[name], "/restart 명령", mode="resume", force=True, no_resume=no_resume))
             tag = " (noresume)" if no_resume else ""
-            channel.send_sync(f"[SV] {name} 재시작 요청됨{tag}")
+            channel.send_sync(msg("restart_requested", name=name, tag=tag))
         elif name:
-            channel.send_sync(f"[SV] 세션 '{name}' 없음. 가능: {', '.join(supervisor.sessions)}, supervisor")
+            channel.send_sync(msg("session_not_found", name=name, available=", ".join(teleclaw.sessions) + ", teleclaw"))
         return True
 
 
@@ -165,57 +168,57 @@ def handle_command(supervisor, text: str, bot_token: str, channel) -> bool:
         if arg:
             name = arg
         else:
-            name = _find_session_by_token(supervisor.sessions, bot_token)
-        if name and name in supervisor.sessions:
+            name = _find_session_by_token(teleclaw.sessions, bot_token)
+        if name and name in teleclaw.sessions:
             if db.is_paused(name) or Path(TELEGRAM_DIR).joinpath(f"pause_{name}.flag").exists():
-                channel.send_sync(f"[SV] {name} 이미 일시정지 상태입니다")
+                channel.send_sync(msg("already_paused", name=name))
                 return True
             db.set_paused(name, True)
             Path(TELEGRAM_DIR).joinpath(f"pause_{name}.flag").write_text(str(int(time.time())))
             # 세션 disconnect
-            state = supervisor.sessions[name]
+            state = teleclaw.sessions[name]
             old_client = state.client
             state.client = None
             if old_client:
-                asyncio.create_task(supervisor._safe_disconnect(old_client, name))
+                asyncio.create_task(teleclaw._safe_disconnect(old_client, name))
             state.connected = False
             state.busy = False
             log(f"{name}: 일시정지됨 (/pause 명령)")
-            channel.send_sync(f"[SV] {name} 일시정지됨")
+            channel.send_sync(msg("paused", name=name))
         elif name:
-            channel.send_sync(f"[SV] 세션 '{name}' 없음. 가능: {', '.join(supervisor.sessions)}")
+            channel.send_sync(msg("session_not_found", name=name, available=", ".join(teleclaw.sessions)))
         return True
 
     if cmd in ("/esc", "/interrupt"):
         if arg:
             name = arg
         else:
-            name = _find_session_by_token(supervisor.sessions, bot_token)
-        if name and name in supervisor.sessions:
-            state = supervisor.sessions[name]
+            name = _find_session_by_token(teleclaw.sessions, bot_token)
+        if name and name in teleclaw.sessions:
+            state = teleclaw.sessions[name]
             if state.connected and state.client:
                 asyncio.create_task(_do_interrupt(state, name, channel))
             else:
-                channel.send_sync(f"[SV] {name}: 연결 안 됨")
+                channel.send_sync(msg("session_not_connected", name=name))
         elif name:
-            channel.send_sync(f"[SV] 세션 '{name}' 없음. 가능: {', '.join(supervisor.sessions)}")
+            channel.send_sync(msg("session_not_found", name=name, available=", ".join(teleclaw.sessions)))
         return True
 
     if cmd == "/reset":
         if arg:
             name = arg
         else:
-            name = _find_session_by_token(supervisor.sessions, bot_token)
-        if name and name in supervisor.sessions:
+            name = _find_session_by_token(teleclaw.sessions, bot_token)
+        if name and name in teleclaw.sessions:
             db.set_paused(name, False)
             pause_flag = Path(TELEGRAM_DIR) / f"pause_{name}.flag"
             if pause_flag.exists():
                 pause_flag.unlink(missing_ok=True)
                 log(f"{name}: pause 해제됨 (/reset 명령)")
-            asyncio.create_task(supervisor._restart_session(supervisor.sessions[name], "/reset 명령 (컨텍스트 초기화)", mode="reset", force=True))
-            channel.send_sync(f"[SV] {name} 리셋 요청됨")
+            asyncio.create_task(teleclaw._restart_session(teleclaw.sessions[name], "/reset 명령 (컨텍스트 초기화)", mode="reset", force=True))
+            channel.send_sync(msg("reset_requested", name=name))
         elif name:
-            channel.send_sync(f"[SV] 세션 '{name}' 없음. 가능: {', '.join(supervisor.sessions)}")
+            channel.send_sync(msg("session_not_found", name=name, available=", ".join(teleclaw.sessions)))
         return True
 
     if cmd in ("/log", "/l"):
@@ -225,34 +228,34 @@ def handle_command(supervisor, text: str, bot_token: str, channel) -> bool:
             with open(LOG_FILE, "r", encoding="utf-8") as f:
                 lines = f.readlines()
             tail = lines[-n:] if len(lines) >= n else lines
-            text = f"[SV] 최근 로그 ({len(tail)}줄)\n\n" + "".join(tail)
+            text = msg("log_header", n=len(tail)) + "\n" + "".join(tail)
             if len(text) > 4000:
                 text = text[-4000:]
             channel.send_sync(text)
         except Exception as e:
-            channel.send_sync(f"[SV] 로그 읽기 실패: {e}")
+            channel.send_sync(msg("log_read_fail", error=e))
         return True
 
     if cmd in ("/usage", "/u"):
-        usage_text = _get_usage(supervisor._http)
+        usage_text = _get_usage(teleclaw._http)
         channel.send_sync(usage_text)
         return True
 
     if cmd == "/ctx":
         # 각 세션의 마지막 usage 로그에서 컨텍스트 사용량 추정
-        lines = ["[SV] 컨텍스트 사용량 (추정)"]
+        lines = [msg("ctx_header")]
         try:
             with open(LOG_FILE, "r", encoding="utf-8") as f:
                 log_lines = f.readlines()
         except Exception:
             log_lines = []
-        for name, state in supervisor.sessions.items():
+        for name, state in teleclaw.sessions.items():
             usage_data = None
             for line in reversed(log_lines):
                 if f"{name}: [usage]" in line:
                     try:
                         idx = line.index("{")
-                        usage_data = eval(line[idx:].strip())
+                        usage_data = json.loads(line[idx:].strip().replace("'", '"'))
                     except Exception:
                         pass
                     break
@@ -265,33 +268,33 @@ def handle_command(supervisor, text: str, bot_token: str, channel) -> bool:
                     f"  {name}: in={inp:,} cache_r={cache_read:,} cache_w={cache_create:,} out={out:,}"
                 )
             else:
-                lines.append(f"  {name}: 데이터 없음")
-        lines.append("\n⚠️ SDK usage 기반 추정값. 정확한 ctx%는 CLI 상태줄 참조")
+                lines.append(msg("ctx_no_data", name=name))
+        lines.append(msg("ctx_note"))
         channel.send_sync("\n".join(lines))
         return True
 
     if cmd == "/sys":
         proc_limit = int(arg) if arg and arg.isdigit() else 10
         proc_limit = min(proc_limit, 30)
-        lines = ["[SV] 시스템 상태"]
+        lines = [msg("sys_header")]
         try:
             import psutil
             # CPU
             cpu_percent = psutil.cpu_percent(interval=0.5)
             cpu_count = psutil.cpu_count()
-            lines.append(f"\n\U0001f5a5 CPU: {cpu_percent}% ({cpu_count}코어)")
+            lines.append("\n" + msg("sys_cpu", pct=cpu_percent, cores=cpu_count))
             # Memory
             mem = psutil.virtual_memory()
             used_gb = mem.used / (1024**3)
             total_gb = mem.total / (1024**3)
-            lines.append(f"\U0001f4be 메모리: {used_gb:.1f}/{total_gb:.1f}GB ({mem.percent}%)")
+            lines.append(msg("sys_mem", used=used_gb, total=total_gb, pct=mem.percent))
             # Disk
-            disk = psutil.disk_usage("D:/")
+            disk = psutil.disk_usage("/" if sys.platform != "win32" else os.environ.get("SystemDrive", "C:/"))
             disk_used = disk.used / (1024**3)
             disk_total = disk.total / (1024**3)
-            lines.append(f"\U0001f4c1 디스크(D:): {disk_used:.0f}/{disk_total:.0f}GB ({disk.percent}%)")
+            lines.append(msg("sys_disk", used=disk_used, total=disk_total, pct=disk.percent))
             # Claude processes
-            lines.append(f"\n\U0001f4cb 프로세스 (상위 {proc_limit}개):")
+            lines.append(msg("sys_procs_header", limit=proc_limit))
             claude_procs = []
             for proc in psutil.process_iter(["pid", "name", "memory_info", "cpu_percent", "cmdline"]):
                 try:
@@ -308,49 +311,28 @@ def handle_command(supervisor, text: str, bot_token: str, channel) -> bool:
                 for pname, pid, mem_mb, cpu_p in sorted(claude_procs, key=lambda x: -x[2])[:proc_limit]:
                     lines.append(f"  {pname}(PID:{pid}) {mem_mb:.0f}MB CPU:{cpu_p:.0f}%")
             else:
-                lines.append("  Claude 관련 프로세스 없음")
-            # Supervisor self
+                lines.append(msg("sys_no_procs"))
+            # TeleClaw self
             sv_proc = psutil.Process()
             sv_mem = sv_proc.memory_info().rss / (1024**2)
-            lines.append(f"\n\U0001f916 슈퍼바이저: PID:{sv_proc.pid} {sv_mem:.0f}MB")
+            lines.append(msg("sys_supervisor", pid=sv_proc.pid, mem=sv_mem))
         except ImportError:
-            lines.append("psutil 미설치. pip install psutil")
+            lines.append(msg("sys_no_psutil"))
         except Exception as e:
-            lines.append(f"오류: {e}")
+            lines.append(msg("error_generic", error=e))
         channel.send_sync("\n".join(lines))
         return True
 
     if cmd == "/ask":
         if not arg:
-            channel.send_sync("[SV] 사용법: /ask <질문>")
+            channel.send_sync(msg("ask_usage"))
             return True
-        asyncio.create_task(supervisor._handle_ask(arg, bot_token))
+        asyncio.create_task(teleclaw._handle_ask(arg, bot_token))
         return True
 
     if cmd in ("/help", "/h"):
-        names = ", ".join(supervisor.sessions.keys())
-        channel.send_sync(
-            "[SV] 명령어\n"
-            f"\n"
-            f"\U0001f4ca 상태\n"
-            f"  /status (/s) \u2014 세션 상태\n"
-            f"  /usage  (/u) \u2014 사용량\n"
-            f"  /ctx \u2014 컨텍스트 사용량\n"
-            f"  /sys \u2014 시스템\n"
-            f"  /log (/l) [N] \u2014 로그\n"
-            f"\n"
-            f"\U0001f504 세션\n"
-            f"  /esc <name> \u2014 작업 중단 (interrupt)\n"
-            f"  /pause (/p) <name> \u2014 일시정지\n"
-            f"  /restart (/r) <name> [noresume] \u2014 재시작\n"
-            f"  /reset <name> \u2014 리셋\n"
-            f"\n"
-            f"\u2139\ufe0f 기타\n"
-            f"  /ask <질문> \u2014 Claude 질문\n"
-            f"  /help (/h) \u2014 이 목록\n"
-            f"\n"
-            f"세션: {names}",
-        )
+        names = ", ".join(teleclaw.sessions.keys())
+        channel.send_sync(msg("help_text", names=names))
         return True
 
     return False

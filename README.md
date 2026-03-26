@@ -1,127 +1,200 @@
 # TeleClaw
 
-**Claude Code 세션을 텔레그램에서 원격 제어하는 슈퍼바이저.**
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/gbongk)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776ab.svg)](https://python.org)
 
-PC에서 Claude Code로 작업하다가 자리를 비워도, 텔레그램으로 진행 상황을 보고 지시를 내릴 수 있습니다.
+**Remote-control your Claude Code sessions from Telegram.**
 
-## NanoClaw와 뭐가 다른가요?
+Keep Claude Code working on your projects while you're away from your desk — monitor progress, send instructions, and manage multiple sessions from your phone.
 
-| | NanoClaw | TeleClaw |
-|---|---|---|
-| **방식** | 채팅할 때마다 새 에이전트 생성 | **기존 세션에 명령 전달** (컨텍스트 유지) |
-| **핵심** | 보안 컨테이너, 멀티채널 | **운영 안정성, 자동 복구, 라이브 모니터링** |
-| **비유** | 매번 새 개발자 고용 | 이미 프로젝트 파악한 개발자한테 카톡으로 지시 |
+## How is this different?
 
-## 주요 기능
+| | [claude-code-telegram](https://github.com/RichardAtCT/claude-code-telegram) | [NanoClaw](https://github.com/qwibitai/nanoclaw) | **TeleClaw** |
+|---|---|---|---|
+| **Session model** | New query each message | New agent per chat | **Persistent sessions** (context preserved) |
+| **Multi-project** | Single directory | Groups | **N projects, each with its own bot** |
+| **Auto-recovery** | None | Container restart | **Health check + watchdog + exponential backoff** |
+| **Live streaming** | Tool/reasoning indicators | None | **Real-time response via editMessage** |
 
-- **텔레그램 원격 제어** — 메시지로 Claude Code에 지시, 라이브 스트리밍으로 응답 확인
-- **멀티 세션 관리** — 여러 프로젝트를 독립 텔레그램 봇으로 동시 운영
-- **자동 복구** — DEAD/STUCK 감지 시 자동 재시작 + auto-resume (3단계 안전장치)
-- **워치독 이중 보호** — wrapper(프로세스 레벨) + watchdog(asyncio 레벨)
-- **SDK 버퍼 밀림 방지** — N턴 밀림 문제 해결 (Claude SDK 사용자 공통 이슈)
-- **6가지 경로별 재시도** — noclient, conn, timeout, error, image_error, rate_limit 각각 맞춤 전략
-- **라이브 스트리밍** — 3초 버퍼링 + editMessage로 실시간 응답 업데이트
-- **도구 사용 중계** — 어떤 파일 읽고 수정하는지 텔레그램으로 실시간 확인
+Think of it like texting a developer who already knows your codebase — not hiring a new one each time.
 
-## 아키텍처
+## Features
+
+- **Telegram remote control** — Send messages to Claude Code, see live-streamed responses
+- **Multi-session management** — Run multiple projects simultaneously with independent bots
+- **Auto-recovery** — DEAD/STUCK detection with 3-stage restart + auto-resume
+- **Dual watchdog** — Process-level wrapper (exponential backoff) + async health check loop
+- **Live streaming** — 3-second buffered editMessage for real-time response updates
+- **Tool relay** — See which files Claude reads/edits in real-time via Telegram
+- **i18n** — Korean and English UI (`lang: "en"` in config)
+- **Cross-platform** — Windows, Linux, macOS
+- **System service** — `teleclaw install` for systemd (Linux) or Task Scheduler (Windows)
+
+## Architecture
 
 ```
-텔레그램 (모바일)
-    ↓ long poll (25s)
-TeleClaw Supervisor (asyncio)
-    ├── 봇 폴링 루프 (×N 프로젝트)
-    ├── 세션 루프 (×N) — SDK query + 스트리밍 응답
-    ├── 건강 체크 루프 (2분 주기)
-    ├── flag 감시 루프 (1초)
-    └── watchdog 루프 (5분)
-    ↓
+Telegram (mobile)
+    | long poll (25s)
+    v
+TeleClaw (asyncio)
+    +-- Bot poll loop (x N projects)
+    +-- Session loop (x N) -- SDK query + streaming response
+    +-- Health check loop (every 2 min)
+    +-- Flag watch loop (every 1s)
+    +-- Watchdog loop (every 5 min)
+    |
+    v
 Claude Code SDK (claude-code-sdk)
-    ↓
-Claude Code 세션 (프로젝트별 독립)
+    |
+    v
+Claude Code sessions (independent per project)
 ```
 
-## 설치
+## Quick Start
 
-### 1. 요구 사항
+### Prerequisites
 
 - Python 3.11+
-- [Claude Code](https://claude.ai/claude-code) 설치 및 인증 완료
-- 텔레그램 봇 생성 (@BotFather)
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
+- Telegram bot token (create one via [@BotFather](https://t.me/BotFather))
 
-### 2. 설치
+### Install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/teleClaw.git
-cd teleClaw
-pip install -r requirements.txt
+# From source
+git clone https://github.com/gbongk/teleclaw.git
+cd teleclaw
+pip install -e .
+
+# Or via pip
+pip install git+https://github.com/gbongk/teleclaw.git
 ```
 
-### 3. 설정
+### Configure
 
 ```bash
 cp config.example.yaml config.yaml
 ```
 
-`config.yaml`을 편집하여 실제 값을 입력:
+Edit `config.yaml`:
 
 ```yaml
+lang: "en"
 chat_id: "YOUR_TELEGRAM_CHAT_ID"
+allowed_users: ""
 
 projects:
   MyProject:
     cwd: "/path/to/your/project"
     bot_token: "BOT_TOKEN_FROM_BOTFATHER"
-    bot_id: "BOT_ID_NUMBER"
 ```
 
-### 4. 실행
+You can add multiple projects — each gets its own Telegram bot:
+
+```yaml
+projects:
+  Frontend:
+    cwd: "/home/user/frontend"
+    bot_token: "111:AAA..."
+  Backend:
+    cwd: "/home/user/backend"
+    bot_token: "222:BBB..."
+```
+
+### Run
 
 ```bash
-# 직접 실행
-python -m hub
+# Direct
+teleclaw
 
-# 자동 재시작 래퍼 (권장)
-python supervisor-wrapper.py
+# With auto-restart wrapper (recommended)
+python teleclaw-wrapper.py
+
+# As a system service
+teleclaw install       # systemd (Linux) or Task Scheduler (Windows)
+teleclaw status        # check service status
+teleclaw logs          # view logs
+teleclaw uninstall     # remove service
 ```
 
-## 텔레그램 명령어
+## Telegram Commands
 
-| 명령어 | 기능 |
+| Command | Description |
 |---|---|
-| (일반 메시지) | Claude Code에 지시 전달 |
-| `/status` | 전체 세션 상태 (OK/DEAD/STUCK/PAUSED) |
-| `/usage` | Claude 사용량 조회 |
-| `/restart [name]` | 세션 재시작 (auto-resume 활성) |
-| `/reset [name]` | 세션 리셋 (컨텍스트 초기화) |
-| `/pause <name>` | 세션 일시정지 |
-| `/wakeup [name]` | 일시정지 해제 |
-| `/log [N]` | 슈퍼바이저 로그 (기본 20줄) |
-| `/sys` | 시스템 정보 (CPU/메모리) |
+| *(any message)* | Send instruction to Claude Code |
+| `/status` (`/s`) | Session status (OK / DEAD / STUCK) |
+| `/usage` (`/u`) | Claude usage (5h / 7d limits) |
+| `/ctx` | Context window usage per session |
+| `/restart` (`/r`) `[name]` | Restart session (with auto-resume) |
+| `/reset [name]` | Reset session (clear context) |
+| `/pause` (`/p`) `<name>` | Pause session |
+| `/esc <name>` | Interrupt current task |
+| `/log` (`/l`) `[N]` | Recent logs (default 20 lines) |
+| `/sys` | System info (CPU / memory / processes) |
+| `/ask <question>` | Quick question (separate session) |
+| `/help` (`/h`) | Command list |
 
-## 파일 구조
+## Auto-Recovery
+
+TeleClaw has two layers of protection:
+
+### 1. Health Check (session level)
+
+Every 2 minutes, each session is assessed:
+- **DEAD** — client disconnected or None
+- **STUCK** — busy for 30+ minutes, or queue not draining
+- **OK** — normal
+
+DEAD/STUCK triggers automatic `_restart_session()` with resume.
+
+### 2. Wrapper (process level)
+
+`teleclaw-wrapper.py` monitors the TeleClaw process itself:
 
 ```
-teleClaw/
-├── hub/                    # 메인 패키지
-│   ├── supervisor.py       # Supervisor 클래스 (핵심)
-│   ├── telegram_api.py     # 텔레그램 API (동기/비동기)
-│   ├── commands.py         # 명령어 핸들러
-│   ├── session.py          # SessionState 데이터클래스
-│   ├── config.py           # config.yaml 로더
-│   ├── process_utils.py    # 크로스 플랫폼 프로세스 유틸
-│   ├── usage_fmt.py        # 사용량 포맷 유틸
-│   └── logging_utils.py    # 로깅 유틸
-├── supervisor-wrapper.py   # 자동 재시작 래퍼
-├── relay-stop.py           # Stop 훅 (응답 → 텔레그램)
-├── relay-tool-use.py       # PostToolUse 훅 (도구 → 텔레그램)
-├── relay_common.py         # 훅 공통 유틸
-├── svctl.py                # CLI 도구
-├── config.yaml             # 설정 (gitignore)
-├── config.example.yaml     # 설정 템플릿
-├── requirements.txt        # 의존성
-└── LICENSE                 # MIT
+Normal exit (alive > 30s)  →  restart after 3s
+Crash (alive < 30s)        →  exponential backoff: 3s → 6s → 12s → ... → 30min max
 ```
 
-## 라이선스
+During backoff, the wrapper still polls Telegram for emergency commands (`/restart`, `/kill`).
 
-MIT License
+## Project Structure
+
+```
+teleclaw/
++-- hub/                     # Main package
+|   +-- teleclaw.py          # TeleClaw class (core)
+|   +-- telegram_api.py      # Telegram API (sync/async, text/photo/file)
+|   +-- channel.py           # Abstract channel interface
+|   +-- channel_telegram.py  # Telegram channel implementation
+|   +-- commands.py          # Command handlers
+|   +-- messages.py          # i18n messages (ko/en)
+|   +-- session.py           # SessionState dataclass
+|   +-- config.py            # config.yaml loader
+|   +-- state_db.py          # SQLite state management
+|   +-- service.py           # systemd / Task Scheduler support
+|   +-- process_utils.py     # Cross-platform process utils
+|   +-- usage_fmt.py         # Usage formatting
+|   +-- logging_utils.py     # Logging utils
++-- teleclaw-wrapper.py      # Auto-restart wrapper
++-- relay-stop.py            # Stop hook (response -> Telegram)
++-- relay-tool-use.py        # PostToolUse hook (tool use -> Telegram)
++-- relay_common.py          # Hook shared utils
++-- svctl.py                 # CLI tool
++-- send_telegram.py         # CLI photo/file sender
++-- config.example.yaml      # Config template
++-- pyproject.toml            # Package metadata
++-- Makefile                  # Dev commands
++-- LICENSE                   # MIT
+```
+
+## Support
+
+If you find TeleClaw useful, consider buying me a coffee:
+
+[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/gbongk)
+
+## License
+
+MIT

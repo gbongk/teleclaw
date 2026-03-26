@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS supervisor_state (
 
 
 def init(db_path: str = ""):
-    """DB 초기화. db_path 미지정 시 SUPERVISOR_DIR/data/teleClaw.db"""
+    """DB 초기화. db_path 미지정 시 DATA_DIR/teleClaw.db"""
     global _DB_PATH
     if not db_path:
         from .config import DATA_DIR
@@ -199,7 +199,7 @@ def get_offset(bot_id: str) -> int:
     return row["offset_val"] if row else 0
 
 
-# --- 슈퍼바이저 전역 상태 ---
+# --- TeleClaw 전역 상태 ---
 
 def set_state(key: str, value: str):
     conn = _get_conn()

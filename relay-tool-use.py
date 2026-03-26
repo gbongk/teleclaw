@@ -7,34 +7,9 @@ import sys
 
 _SUPERVISOR_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _SUPERVISOR_DIR)
-from relay_common import get_config, is_relay_enabled, is_supervised_session, send_telegram
+from relay_common import get_config, is_relay_enabled, is_supervised_session, send_telegram, send_telegram_photo, LOGS_DIR
 
-
-def send_telegram_photo(bot_token, chat_id, photo_path, caption=""):
-    """텔레그램으로 이미지 전송 (multipart/form-data)."""
-    import mimetypes
-    boundary = "----RelayBoundary"
-    body = b""
-    # chat_id
-    body += f"--{boundary}\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n{chat_id}\r\n".encode()
-    # caption
-    if caption:
-        body += f"--{boundary}\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n{caption}\r\n".encode()
-    # photo file
-    mime = mimetypes.guess_type(photo_path)[0] or "image/jpeg"
-    filename = os.path.basename(photo_path)
-    body += f"--{boundary}\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"{filename}\"\r\nContent-Type: {mime}\r\n\r\n".encode()
-    with open(photo_path, "rb") as f:
-        body += f.read()
-    body += f"\r\n--{boundary}--\r\n".encode()
-
-    url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
-    req = urllib.request.Request(url, data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-    try:
-        urllib.request.urlopen(req, timeout=15)
-    except Exception as e:
-        print(f"[relay-tool-use] 사진 전송 실패: {e}", file=sys.stderr, flush=True)
+STATE_DIR = LOGS_DIR
 
 def summarize(tool_name, tool_input):
     """도구 사용을 한 줄로 요약하여 텔레그램 중계용 텍스트를 생성한다.

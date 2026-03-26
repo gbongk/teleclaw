@@ -54,7 +54,25 @@ class Channel(ABC):
     def send_sync(self, text: str, use_markup: bool = False, notify: bool = False) -> str:
         """동기 메시지 전송. commands.py 등에서 사용."""
 
-    # --- 파일 ---
+    # --- 파일 전송 ---
+
+    @abstractmethod
+    async def send_photo(self, file_path: str, caption: str = "") -> str:
+        """이미지 전송. Returns: message_id (str)"""
+
+    @abstractmethod
+    async def send_file(self, file_path: str, caption: str = "") -> str:
+        """파일 전송. Returns: message_id (str)"""
+
+    def send_photo_sync(self, file_path: str, caption: str = "") -> str:
+        """동기 이미지 전송. CLI/훅용."""
+        return ""
+
+    def send_file_sync(self, file_path: str, caption: str = "") -> str:
+        """동기 파일 전송. CLI/훅용."""
+        return ""
+
+    # --- 파일 다운로드 ---
 
     async def download_file(self, file_ref: str) -> bytes:
         """파일 다운로드. file_ref는 플랫폼별 (텔레그램: file_id)."""

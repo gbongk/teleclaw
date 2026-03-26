@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""슈퍼바이저 유닛테스트 — 순수 함수 격리 테스트."""
+"""TeleClaw 유닛테스트 — 순수 함수 격리 테스트."""
 
 import sys
 import os
@@ -194,14 +194,14 @@ class TestSplitMessage(unittest.TestCase):
 
 
 # ============================================================
-# supervisor.py 함수 테스트
+# teleclaw.py 함수 테스트
 # ============================================================
 
 class TestToolSummary(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from hub.supervisor import Supervisor
-        cls.func = staticmethod(Supervisor._tool_summary)
+        from hub.teleclaw import TeleClaw
+        cls.func = staticmethod(TeleClaw._tool_summary)
 
     def test_read_file(self):
         result = self.func("Read", {"file_path": "/some/path/file.py"})
@@ -230,8 +230,8 @@ class TestToolSummary(unittest.TestCase):
 class TestFormatToolLine(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from hub.supervisor import Supervisor
-        cls.func = staticmethod(Supervisor._format_tool_line)
+        from hub.teleclaw import TeleClaw
+        cls.func = staticmethod(TeleClaw._format_tool_line)
 
     def test_single(self):
         result = self.func(["🔧 Read: a.py"])
@@ -313,8 +313,8 @@ class TestFormatToolLine(unittest.TestCase):
 class TestStabilizeMarkdown(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from hub.supervisor import Supervisor
-        cls.func = staticmethod(Supervisor._stabilize_markdown)
+        from hub.teleclaw import TeleClaw
+        cls.func = staticmethod(TeleClaw._stabilize_markdown)
 
     def test_open_code_block(self):
         result = self.func("```\ncode")
@@ -332,9 +332,9 @@ class TestStabilizeMarkdown(unittest.TestCase):
 class TestAssessHealth(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from hub.supervisor import Supervisor
+        from hub.teleclaw import TeleClaw
         from hub.session import SessionState
-        cls.supervisor = Supervisor()
+        cls.supervisor = TeleClaw()
         cls.SessionState = SessionState
 
     def _make_state(self, **kwargs):
@@ -395,11 +395,11 @@ class TestHandleEmergencyCommand(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        # supervisor-wrapper.py는 하이픈이 있어서 importlib 사용
+        # teleclaw-wrapper.py는 하이픈이 있어서 importlib 사용
         import importlib.util
         spec = importlib.util.spec_from_file_location(
-            "supervisor_wrapper",
-            os.path.join(os.path.dirname(__file__), "..", "supervisor-wrapper.py"),
+            "teleclaw_wrapper",
+            os.path.join(os.path.dirname(__file__), "..", "teleclaw-wrapper.py"),
         )
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -473,23 +473,25 @@ class TestCommandsPauseRelease(unittest.TestCase):
 
 
 # ============================================================
-# supervisor.py — _should_auto_resume 판단 로직
+# teleclaw.py — _should_auto_resume 판단 로직
 # ============================================================
 
 class TestShouldAutoResume(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from hub.supervisor import Supervisor
+        from hub.teleclaw import TeleClaw
         from hub.session import SessionState
-        cls.supervisor = Supervisor()
+        cls.supervisor = TeleClaw()
         cls.SessionState = SessionState
 
     def _make_state(self, **kwargs):
         import time
+        from unittest.mock import MagicMock
         state = self.SessionState(
             name="Test",
             config={"bot_token": "x", "cwd": ".", "bot_id": "1"},
         )
+        state.channel = MagicMock()
         state.session_id = kwargs.get("session_id", "abc123")
         state.no_resume_before_restart = kwargs.get("no_resume", False)
         state.last_restart_mode = kwargs.get("mode", "resume")
@@ -530,7 +532,7 @@ class TestShouldAutoResume(unittest.TestCase):
 
 
 # ============================================================
-# supervisor.py — 재시작 중 에러 스킵
+# teleclaw.py — 재시작 중 에러 스킵
 # ============================================================
 
 class TestRestartingErrorSkip(unittest.TestCase):
@@ -540,7 +542,7 @@ class TestRestartingErrorSkip(unittest.TestCase):
         """restarting 상태에서 에러 발생 시 retry_error 증가 안 함."""
         msg_data = {"text": "리셋", "retry_error": 0}
         state_restarting = True
-        # supervisor.py 로직 시뮬레이션
+        # teleclaw.py 로직 시뮬레이션
         if state_restarting:
             skipped = True
         else:

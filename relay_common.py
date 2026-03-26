@@ -43,7 +43,7 @@ def is_relay_enabled(bot_id, chat_id):
 
 
 def is_supervised_session(session_id):
-    """supervisor가 관리하는 세션인지 확인"""
+    """TeleClaw가 관리하는 세션인지 확인"""
     if not session_id:
         return False
     if not os.path.exists(STATUS_FILE):
@@ -72,6 +72,40 @@ def is_supervised_session(session_id):
         return True
 
 
+def _send_telegram_multipart(bot_token, chat_id, field, file_path, caption=""):
+    """공통 multipart 전송 (urllib, 훅용 경량)."""
+    import mimetypes
+    boundary = "----RelayBoundary"
+    body = b""
+    body += f"--{boundary}\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n{chat_id}\r\n".encode()
+    if caption:
+        body += f"--{boundary}\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n{caption}\r\n".encode()
+    mime = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+    filename = os.path.basename(file_path)
+    body += f"--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"; filename=\"{filename}\"\r\nContent-Type: {mime}\r\n\r\n".encode()
+    with open(file_path, "rb") as f:
+        body += f.read()
+    body += f"\r\n--{boundary}--\r\n".encode()
+    endpoint = "sendPhoto" if field == "photo" else "sendDocument"
+    url = f"https://api.telegram.org/bot{bot_token}/{endpoint}"
+    req = urllib.request.Request(url, data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    try:
+        urllib.request.urlopen(req, timeout=15)
+    except Exception as e:
+        print(f"[relay] 파일 전송 실패: {e}", file=__import__('sys').stderr, flush=True)
+
+
+def send_telegram_photo(bot_token, chat_id, photo_path, caption=""):
+    """텔레그램으로 이미지 전송 (urllib, 훅용)."""
+    _send_telegram_multipart(bot_token, chat_id, "photo", photo_path, caption)
+
+
+def send_telegram_file(bot_token, chat_id, file_path, caption=""):
+    """텔레그램으로 파일 전송 (urllib, 훅용)."""
+    _send_telegram_multipart(bot_token, chat_id, "document", file_path, caption)
+
+
 def send_telegram(bot_token, chat_id, text):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = json.dumps({
@@ -80,5 +114,5 @@ def send_telegram(bot_token, chat_id, text):
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
     try:
         urllib.request.urlopen(req, timeout=5)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[relay] 텔레그램 전송 실패: {e}", file=__import__('sys').stderr, flush=True)

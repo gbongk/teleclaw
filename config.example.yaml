@@ -2,8 +2,15 @@
 # 이 파일을 config.yaml로 복사한 후 실제 값을 채우세요.
 #   cp config.example.yaml config.yaml
 
+# 언어 (ko / en)
+lang: "en"
+
 # 텔레그램 채팅 ID (봇과 대화할 사용자)
 chat_id: "YOUR_TELEGRAM_CHAT_ID"
+
+# 허용된 사용자 ID (쉼표 구분, 비워두면 chat_id만 허용)
+# @userinfobot 으로 자신의 ID를 확인할 수 있습니다
+allowed_users: ""
 
 # 프로젝트별 설정
 # 각 프로젝트는 독립된 텔레그램 봇으로 운영됩니다.
@@ -11,5 +18,4 @@ chat_id: "YOUR_TELEGRAM_CHAT_ID"
 projects:
   MyProject:
     cwd: "/path/to/your/project"          # Claude Code 작업 디렉토리
-    bot_token: "BOT_TOKEN_FROM_BOTFATHER"  # 텔레그램 봇 토큰
-    bot_id: "BOT_ID_NUMBER"               # 봇 토큰의 : 앞부분
+    bot_token: "BOT_TOKEN_FROM_BOTFATHER"  # 텔레그램 봇 토큰 (@BotFather에서 발급)

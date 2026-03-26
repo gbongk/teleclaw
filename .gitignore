@@ -1,6 +1,10 @@
 __pycache__/
 *.pyc
+*.egg-info/
+dist/
+build/
 logs/
 data/
-.claude/settings.local.json
 config.yaml
+.claude/settings.local.json
+bash.exe.stackdump
