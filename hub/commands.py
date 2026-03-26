@@ -9,18 +9,18 @@ from .config import (
     SUPERVISOR_DIR, LOGS_DIR, LOG_FILE, TELEGRAM_DIR,
 )
 from .logging_utils import log
-from .telegram_api import send_telegram
+from . import state_db as db
 
 
-async def _do_interrupt(state, name: str, bot_token: str):
+async def _do_interrupt(state, name: str, channel):
     """세션의 현재 작업을 중단한다."""
     try:
         await state.client.interrupt()
         log(f"{name}: interrupt 완료")
-        send_telegram(f"[SV] {name}: 작업 중단됨", bot_token)
+        channel.send_sync(f"[SV] {name}: 작업 중단됨")
     except Exception as e:
         log(f"{name}: interrupt 실패: {e}")
-        send_telegram(f"[SV] {name}: interrupt 실패 ({e})", bot_token)
+        channel.send_sync(f"[SV] {name}: interrupt 실패 ({e})")
 
 
 def _find_session_by_token(sessions: dict, bot_token: str) -> str | None:
@@ -103,7 +103,7 @@ def _get_usage(http_client) -> str:
     return text
 
 
-def handle_command(supervisor, text: str, bot_token: str) -> bool:
+def handle_command(supervisor, text: str, bot_token: str, channel) -> bool:
     """텔레그램 메시지가 /로 시작할 때 호출. 처리했으면 True 반환.
 
     지원 명령: /status, /esc, /pause, /restart, /reset, /log, /usage, /sys, /ask, /help
@@ -117,7 +117,7 @@ def handle_command(supervisor, text: str, bot_token: str) -> bool:
     arg = parts[1].strip() if len(parts) > 1 else ""
 
     if cmd in ("/stop", "/shutdown", "/kill"):
-        send_telegram("[SV] 슈퍼바이저 종료는 채팅방에서 불가합니다.", bot_token)
+        channel.send_sync("[SV] 슈퍼바이저 종료는 채팅방에서 불가합니다.")
         return True
 
     if cmd in ("/status", "/s"):
@@ -130,7 +130,7 @@ def handle_command(supervisor, text: str, bot_token: str) -> bool:
             lines.append(
                 f"  {name}: {status} | Q={state.query_count} E={state.error_count} R={state.restart_count}"
             )
-        send_telegram("\n".join(lines), bot_token)
+        channel.send_sync("\n".join(lines))
         return True
 
     if cmd in ("/restart", "/r"):
@@ -142,20 +142,22 @@ def handle_command(supervisor, text: str, bot_token: str) -> bool:
         else:
             name = _find_session_by_token(supervisor.sessions, bot_token)
         if name and name.lower() == "supervisor":
-            send_telegram("[SV] 슈퍼바이저 재시작합니다...", bot_token)
+            channel.send_sync("[SV] 슈퍼바이저 재시작합니다...")
+            db.push_command("supervisor", "restart", "force")
             Path(TELEGRAM_DIR).joinpath("restart_request_supervisor.flag").write_text("force")
             return True
         if name and name in supervisor.sessions:
-            # pause 상태라면 해제
+            # pause 해제 (DB + flag)
+            db.set_paused(name, False)
             pause_flag = Path(TELEGRAM_DIR) / f"pause_{name}.flag"
             if pause_flag.exists():
                 pause_flag.unlink(missing_ok=True)
                 log(f"{name}: pause 해제됨 (/restart 명령)")
             asyncio.create_task(supervisor._restart_session(supervisor.sessions[name], "/restart 명령", mode="resume", force=True, no_resume=no_resume))
             tag = " (noresume)" if no_resume else ""
-            send_telegram(f"[SV] {name} 재시작 요청됨{tag}", bot_token)
+            channel.send_sync(f"[SV] {name} 재시작 요청됨{tag}")
         elif name:
-            send_telegram(f"[SV] 세션 '{name}' 없음. 가능: {', '.join(supervisor.sessions)}, supervisor", bot_token)
+            channel.send_sync(f"[SV] 세션 '{name}' 없음. 가능: {', '.join(supervisor.sessions)}, supervisor")
         return True
 
 
@@ -165,11 +167,11 @@ def handle_command(supervisor, text: str, bot_token: str) -> bool:
         else:
             name = _find_session_by_token(supervisor.sessions, bot_token)
         if name and name in supervisor.sessions:
-            pause_flag = Path(TELEGRAM_DIR) / f"pause_{name}.flag"
-            if pause_flag.exists():
-                send_telegram(f"[SV] {name} 이미 일시정지 상태입니다", bot_token)
+            if db.is_paused(name) or Path(TELEGRAM_DIR).joinpath(f"pause_{name}.flag").exists():
+                channel.send_sync(f"[SV] {name} 이미 일시정지 상태입니다")
                 return True
-            pause_flag.write_text(str(int(time.time())))
+            db.set_paused(name, True)
+            Path(TELEGRAM_DIR).joinpath(f"pause_{name}.flag").write_text(str(int(time.time())))
             # 세션 disconnect
             state = supervisor.sessions[name]
             old_client = state.client
@@ -179,9 +181,9 @@ def handle_command(supervisor, text: str, bot_token: str) -> bool:
             state.connected = False
             state.busy = False
             log(f"{name}: 일시정지됨 (/pause 명령)")
-            send_telegram(f"[SV] {name} 일시정지됨", bot_token)
+            channel.send_sync(f"[SV] {name} 일시정지됨")
         elif name:
-            send_telegram(f"[SV] 세션 '{name}' 없음. 가능: {', '.join(supervisor.sessions)}", bot_token)
+            channel.send_sync(f"[SV] 세션 '{name}' 없음. 가능: {', '.join(supervisor.sessions)}")
         return True
 
     if cmd in ("/esc", "/interrupt"):
@@ -192,11 +194,11 @@ def handle_command(supervisor, text: str, bot_token: str) -> bool:
         if name and name in supervisor.sessions:
             state = supervisor.sessions[name]
             if state.connected and state.client:
-                asyncio.create_task(_do_interrupt(state, name, bot_token))
+                asyncio.create_task(_do_interrupt(state, name, channel))
             else:
-                send_telegram(f"[SV] {name}: 연결 안 됨", bot_token)
+                channel.send_sync(f"[SV] {name}: 연결 안 됨")
         elif name:
-            send_telegram(f"[SV] 세션 '{name}' 없음. 가능: {', '.join(supervisor.sessions)}", bot_token)
+            channel.send_sync(f"[SV] 세션 '{name}' 없음. 가능: {', '.join(supervisor.sessions)}")
         return True
 
     if cmd == "/reset":
@@ -205,15 +207,15 @@ def handle_command(supervisor, text: str, bot_token: str) -> bool:
         else:
             name = _find_session_by_token(supervisor.sessions, bot_token)
         if name and name in supervisor.sessions:
-            # pause 상태라면 해제
+            db.set_paused(name, False)
             pause_flag = Path(TELEGRAM_DIR) / f"pause_{name}.flag"
             if pause_flag.exists():
                 pause_flag.unlink(missing_ok=True)
                 log(f"{name}: pause 해제됨 (/reset 명령)")
             asyncio.create_task(supervisor._restart_session(supervisor.sessions[name], "/reset 명령 (컨텍스트 초기화)", mode="reset", force=True))
-            send_telegram(f"[SV] {name} 리셋 요청됨", bot_token)
+            channel.send_sync(f"[SV] {name} 리셋 요청됨")
         elif name:
-            send_telegram(f"[SV] 세션 '{name}' 없음. 가능: {', '.join(supervisor.sessions)}", bot_token)
+            channel.send_sync(f"[SV] 세션 '{name}' 없음. 가능: {', '.join(supervisor.sessions)}")
         return True
 
     if cmd in ("/log", "/l"):
@@ -226,14 +228,14 @@ def handle_command(supervisor, text: str, bot_token: str) -> bool:
             text = f"[SV] 최근 로그 ({len(tail)}줄)\n\n" + "".join(tail)
             if len(text) > 4000:
                 text = text[-4000:]
-            send_telegram(text, bot_token)
+            channel.send_sync(text)
         except Exception as e:
-            send_telegram(f"[SV] 로그 읽기 실패: {e}", bot_token)
+            channel.send_sync(f"[SV] 로그 읽기 실패: {e}")
         return True
 
     if cmd in ("/usage", "/u"):
         usage_text = _get_usage(supervisor._http)
-        send_telegram(usage_text, bot_token)
+        channel.send_sync(usage_text)
         return True
 
     if cmd == "/ctx":
@@ -265,7 +267,7 @@ def handle_command(supervisor, text: str, bot_token: str) -> bool:
             else:
                 lines.append(f"  {name}: 데이터 없음")
         lines.append("\n⚠️ SDK usage 기반 추정값. 정확한 ctx%는 CLI 상태줄 참조")
-        send_telegram("\n".join(lines), bot_token)
+        channel.send_sync("\n".join(lines))
         return True
 
     if cmd == "/sys":
@@ -315,19 +317,19 @@ def handle_command(supervisor, text: str, bot_token: str) -> bool:
             lines.append("psutil 미설치. pip install psutil")
         except Exception as e:
             lines.append(f"오류: {e}")
-        send_telegram("\n".join(lines), bot_token)
+        channel.send_sync("\n".join(lines))
         return True
 
     if cmd == "/ask":
         if not arg:
-            send_telegram("[SV] 사용법: /ask <질문>", bot_token)
+            channel.send_sync("[SV] 사용법: /ask <질문>")
             return True
         asyncio.create_task(supervisor._handle_ask(arg, bot_token))
         return True
 
     if cmd in ("/help", "/h"):
         names = ", ".join(supervisor.sessions.keys())
-        send_telegram(
+        channel.send_sync(
             "[SV] 명령어\n"
             f"\n"
             f"\U0001f4ca 상태\n"
@@ -348,7 +350,6 @@ def handle_command(supervisor, text: str, bot_token: str) -> bool:
             f"  /help (/h) \u2014 이 목록\n"
             f"\n"
             f"세션: {names}",
-            bot_token,
         )
         return True
 

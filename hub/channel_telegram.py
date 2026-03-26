@@ -49,7 +49,7 @@ class TelegramChannel(Channel):
         if not self._ahttp:
             return []
         url = f"https://api.telegram.org/bot{self._bot_token}/getUpdates"
-        params = {"offset": self._offset, "timeout": timeout, "allowed_updates": ["message"]}
+        params = {"offset": self._offset, "timeout": timeout, "allowed_updates": ["message", "edited_message"]}
         try:
             resp = await self._ahttp.get(url, params=params, timeout=timeout + 10)
             data = resp.json()
@@ -62,6 +62,7 @@ class TelegramChannel(Channel):
         messages = []
         for update in data.get("result", []):
             self._offset = update["update_id"] + 1
+            is_edited = "edited_message" in update
             msg = update.get("message") or update.get("edited_message")
             if not msg:
                 continue
@@ -74,6 +75,8 @@ class TelegramChannel(Channel):
             if msg.get("document"):
                 files.append({"type": "document", "file_id": msg["document"]["file_id"],
                               "name": msg["document"].get("file_name", "")})
+            raw = dict(msg)
+            raw["_is_edited"] = is_edited
             messages.append({
                 "id": str(msg.get("message_id", "")),
                 "text": text,
@@ -81,7 +84,7 @@ class TelegramChannel(Channel):
                 "reply_to": str(msg.get("reply_to_message", {}).get("message_id", "")) if msg.get("reply_to_message") else "",
                 "files": files,
                 "date": msg.get("date", 0),
-                "_raw": msg,  # 텔레그램 전용 필드 접근용
+                "_raw": raw,  # 텔레그램 전용 필드 접근용
             })
         return messages
 

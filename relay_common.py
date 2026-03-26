@@ -30,6 +30,15 @@ def get_config():
 
 
 def is_relay_enabled(bot_id, chat_id):
+    # DB 체크 우선, 없으면 flag 파일 체크 (듀얼)
+    try:
+        import sys
+        sys.path.insert(0, os.path.join(_SUPERVISOR_DIR, "hub"))
+        from state_db import is_relay_enabled as db_check
+        if db_check(bot_id, chat_id):
+            return True
+    except Exception:
+        pass
     return os.path.exists(os.path.join(DATA_DIR, f"relay_enabled_{bot_id}_{chat_id}.flag"))
 
 

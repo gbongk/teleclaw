@@ -11,6 +11,7 @@ class SessionState:
     name: str
     config: dict
     client: ClaudeSDKClient | None = None
+    channel: "Channel | None" = None  # hub.channel.Channel
     connected: bool = False
     busy: bool = False
     message_queue: asyncio.Queue = field(default_factory=asyncio.Queue)

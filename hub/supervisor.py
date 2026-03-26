@@ -43,15 +43,11 @@ from .config import (
     AUTO_RESUME_ENABLED, AUTO_RESUME_MODE, AUTO_RESUME_PROMPTS,
 )
 from .logging_utils import log, _find_existing_supervisor, _write_lock, _release_lock
-from .telegram_api import (
-    send_telegram, edit_telegram, send_ack,
-    _clean_text, _escape_html, _convert_table_to_list,
-    _md_to_telegram_html, _split_message,
-    async_send_telegram, async_edit_telegram, async_react,
-    _notify_all, async_notify_all,
-)
+from .telegram_api import _notify_all
+from .channel_telegram import TelegramChannel
 from .session import SessionState
 from .commands import handle_command, _get_usage
+from . import state_db as db
 
 
 class Supervisor:
@@ -70,17 +66,28 @@ class Supervisor:
 
     async def start(self):
         log("슈퍼바이저 시작")
+        db.init()
         _notify_all("[HUB] 슈퍼바이저 시작")
 
         # 세션 초기화
         for name, config in PROJECTS.items():
             state = SessionState(name=name, config=config)
+            channel = TelegramChannel(
+                bot_token=config["bot_token"],
+                chat_id=CHAT_ID,
+                bot_name=name,
+            )
+            state.channel = channel
             self.sessions[name] = state
 
         self._load_session_ids()
 
         # AsyncClient 먼저 생성 (폴링에 필요)
         self._ahttp = httpx.AsyncClient(timeout=35)
+
+        # 각 채널에 ahttp 설정
+        for state in self.sessions.values():
+            state.channel.set_ahttp(self._ahttp)
 
         # 폴링 + 유틸리티 루프 즉시 시작 (연결 전에도 메시지 수신 가능)
         tasks = []
@@ -92,14 +99,13 @@ class Supervisor:
 
         # 세션 병렬 연결 (다운타임 최소화, pause 세션 제외)
         async def _connect_and_init(state):
-            pause_flag = Path(TELEGRAM_DIR) / f"pause_{state.name}.flag"
-            if pause_flag.exists():
+            if db.is_paused(state.name) or Path(TELEGRAM_DIR).joinpath(f"pause_{state.name}.flag").exists():
                 log(f"{state.name}: PAUSED — 연결 스킵")
                 return
             await self._connect_session(state)
             if state.connected:
                 await self._wait_mcp_ready(state, timeout=5)
-                send_telegram(f"[SV] 시작 완료 — 메시지 수신 준비됨", state.config["bot_token"], notify=True)
+                state.channel.send_sync("[SV] 시작 완료 — 메시지 수신 준비됨", notify=True)
                 log(f"{state.name}: 세션 루프 즉시 시작")
 
         await asyncio.gather(
@@ -115,7 +121,7 @@ class Supervisor:
 
         connected = [n for n, s in self.sessions.items() if s.connected]
         elapsed = int(time.time() - self._start_time)
-        await async_notify_all(self._ahttp, f"[HUB] 초기화 완료 ({elapsed}초) — {', '.join(connected)} 연결됨")
+        await self._broadcast(f"[HUB] 초기화 완료 ({elapsed}초) — {', '.join(connected)} 연결됨")
         log("모든 루프 시작됨")
 
         # 슈퍼바이저 시작 시에는 자동 재개 안 함
@@ -125,7 +131,7 @@ class Supervisor:
         for i, r in enumerate(results):
             if isinstance(r, BaseException):
                 log(f"task[{i}] 에러로 종료: {r}")
-                await async_notify_all(self._ahttp, f"[HUB] task[{i}] 에러: {r}")
+                await self._broadcast(f"[HUB] task[{i}] 에러: {r}")
 
 
     async def _safe_disconnect(self, client, name: str):
@@ -185,7 +191,7 @@ class Supervisor:
             state.query_count = 0
             state.last_restart_mode = mode
             log(f"{state.name}: SDK 세션 연결 완료 (mode={mode})")
-            send_telegram(f"[SV] {state.name}: 연결 완료", state.config["bot_token"], notify=True)
+            state.channel.send_sync(f"[SV] {state.name}: 연결 완료", notify=True)
         except Exception as e:
             if mode != "reset":
                 log(f"{state.name}: {mode} 실패 ({e}), reset 모드로 재시도")
@@ -223,17 +229,43 @@ class Supervisor:
             self._ask_client = None
             return False
 
+    def _broadcast_sync(self, text: str):
+        """전체 세션에 동기 알림."""
+        sent = set()
+        for state in self.sessions.values():
+            token = state.config.get("bot_token", "")
+            if token and token not in sent:
+                state.channel.send_sync(text)
+                sent.add(token)
+
+    async def _broadcast(self, text: str):
+        """전체 세션에 비동기 알림."""
+        sent = set()
+        for state in self.sessions.values():
+            token = state.config.get("bot_token", "")
+            if token and token not in sent:
+                await state.channel.send(text)
+                sent.add(token)
+
+    def _channel_by_token(self, bot_token: str):
+        """bot_token에 해당하는 channel 반환."""
+        for state in self.sessions.values():
+            if state.config["bot_token"] == bot_token:
+                return state.channel
+        return None
+
     async def _handle_ask(self, question: str, bot_token: str):
         """ask 명령 비동기 처리."""
+        ch = self._channel_by_token(bot_token)
         if self._ask_busy:
-            send_telegram("[SV] /ask 처리 중입니다. 잠시 후 다시 시도하세요.", bot_token)
+            ch.send_sync("[SV] /ask 처리 중입니다. 잠시 후 다시 시도하세요.")
             return
         self._ask_busy = True
         try:
             if not await self._ensure_ask_client():
-                send_telegram("[SV] ask 세션 연결 실패", bot_token)
+                ch.send_sync("[SV] ask 세션 연결 실패")
                 return
-            send_telegram(f"[SV] 질문 중...", bot_token)
+            ch.send_sync("[SV] 질문 중...")
             await self._ask_client.query(question)
             answer_parts = []
             async for msg in self._ask_client.receive_messages():
@@ -248,10 +280,10 @@ class Supervisor:
             answer = "\n".join(answer_parts) if answer_parts else "(빈 응답)"
             if len(answer) > 3900:
                 answer = answer[:3900] + "\n... (잘림)"
-            send_telegram(f"[SV] Claude:\n{answer}", bot_token)
+            ch.send_sync(f"[SV] Claude:\n{answer}")
         except Exception as e:
             log(f"ask 처리 실패: {e}")
-            send_telegram(f"[SV] ask 오류: {e}", bot_token)
+            ch.send_sync(f"[SV] ask 오류: {e}")
             # 세션 초기화
             self._ask_client = None
         finally:
@@ -271,17 +303,14 @@ class Supervisor:
                 msg = f"[WARN] {state.name}: 재시작 한도 초과 ({MAX_RESTARTS_PER_WINDOW}회/{RESTART_WINDOW//60}분)\n사유: {reason}\n{wait_remaining}초 후 자동 재시도"
                 log(msg)
                 if now - state.last_notify_time > 300:
-                    if self._ahttp:
-                        await async_notify_all(self._ahttp, msg)
-                    else:
-                        _notify_all(msg)
+                    self._broadcast_sync(msg)
                     state.last_notify_time = now
                 return
 
         state.restarting = True
         try:
             log(f"{state.name}: 재시작 시도 (사유: {reason})")
-            send_telegram(f"[SV] {state.name}: {reason} → 재시작", state.config["bot_token"])
+            state.channel.send_sync(f"[SV] {state.name}: {reason} → 재시작")
 
             # 재시작 전 상태 기록 (STUCK은 busy 강제)
             state.was_busy_before_restart = state.busy or "STUCK" in reason
@@ -303,7 +332,7 @@ class Supervisor:
             state.restart_count += 1
             self._write_status()
             if state.connected:
-                send_telegram(f"[SV] {state.name}: 재시작 완료, 메시지 수신 준비됨", state.config["bot_token"], notify=True)
+                state.channel.send_sync("[SV] {}: 재시작 완료, 메시지 수신 준비됨".format(state.name), notify=True)
 
                 # auto-resume: 세션 개별 재시작 시에만
                 # reset(new) 또는 슈퍼바이저 초기 시작 시에는 스킵 (start()에서 check 모드로 처리)
@@ -330,9 +359,10 @@ class Supervisor:
             try:
                 await asyncio.sleep(1)
 
-                # supervisor 자체 재시작 flag 체크 (5분 쿨다운)
+                # supervisor 자체 재시작 체크 (DB + flag 듀얼)
+                sv_cmd = db.pop_command("supervisor")
                 sv_flag = Path(TELEGRAM_DIR) / "restart_request_supervisor.flag"
-                if sv_flag.exists():
+                if sv_cmd or sv_flag.exists():
                     mode = "resume"
                     force = False
                     try:
@@ -365,41 +395,59 @@ class Supervisor:
                             if busy_sessions:
                                 log(f"graceful 대기 60초 초과, 강제 종료 (busy: {', '.join(busy_sessions)})")
                         log(f"supervisor 자체 재시작 flag 감지 (mode={mode}, force={force}) → 프로세스 종료")
-                        await async_notify_all(self._ahttp, f"[HUB] 자체 재시작 요청 (mode={mode})")
+                        await self._broadcast(f"[HUB] 자체 재시작 요청 (mode={mode})")
                         self._shutdown = True
                         os._exit(0)  # wrapper가 자동 재시작
 
                 for name, state in self.sessions.items():
-                    # restart flag 체크
+                    # 1) DB 명령 큐 체크
+                    cmd = db.pop_command(name)
+                    # 2) flag 파일 체크 (하위 호환)
                     flag_path = Path(TELEGRAM_DIR) / f"restart_request_{name}.flag"
-                    if not flag_path.exists():
+                    if not cmd and not flag_path.exists():
                         continue
                     mode = "resume"
                     force = False
                     no_resume = False
-                    try:
-                        content = flag_path.read_text(encoding="utf-8").strip()
-                        tokens = [t.strip() for t in content.split(",")]
+                    if cmd:
+                        # DB 명령에서 파싱
+                        command = cmd.get("command", "")
+                        if command == "pause":
+                            db.set_paused(name, True)
+                            log(f"{name}: pause 명령 (DB)")
+                            continue
+                        if command == "wakeup":
+                            db.set_paused(name, False)
+                            log(f"{name}: wakeup 명령 (DB)")
+                            continue
+                        args = cmd.get("args", "")
+                        tokens = [t.strip() for t in args.split(",") if t.strip()]
                         for t in tokens:
-                            if t == "force":
-                                force = True
-                            elif t == "noresume":
-                                no_resume = True
-                            elif t in ("new", "resume", "reset"):
-                                mode = t
-                    except Exception:
-                        pass
-                    flag_path.unlink(missing_ok=True)
+                            if t == "force": force = True
+                            elif t == "noresume": no_resume = True
+                            elif t in ("new", "resume", "reset"): mode = t
+                        log(f"{name}: {command} 명령 (DB, mode={mode})")
+                    elif flag_path.exists():
+                        # flag 파일에서 파싱 (하위 호환)
+                        try:
+                            content = flag_path.read_text(encoding="utf-8").strip()
+                            tokens = [t.strip() for t in content.split(",")]
+                            for t in tokens:
+                                if t == "force": force = True
+                                elif t == "noresume": no_resume = True
+                                elif t in ("new", "resume", "reset"): mode = t
+                        except Exception:
+                            pass
+                        flag_path.unlink(missing_ok=True)
+                        log(f"{name}: restart_request flag 감지 (mode={mode})")
                     # restart 요청 시 pause 자동 해제
                     pause_flag = Path(TELEGRAM_DIR) / f"pause_{name}.flag"
                     if pause_flag.exists():
                         pause_flag.unlink(missing_ok=True)
-                        log(f"{name}: pause 해제됨 (restart 요청)")
-                    # flag 경유 재시작: 사용자 요청이므로 busy 여부와 무관하게 auto-resume 허용
-                    # no_resume는 flag 파일에 명시적으로 "noresume"이 있을 때만 적용
-                    state.no_resume_before_restart = False  # busy 마킹 초기화
-                    log(f"{name}: restart_request flag 감지 (mode={mode}, force={force}, noresume={no_resume})")
-                    await self._restart_session(state, f"flag 요청 (mode={mode})", mode=mode, force=force, no_resume=no_resume)
+                    db.set_paused(name, False)
+                    state.no_resume_before_restart = False
+                    log(f"{name}: restart 실행 (mode={mode}, force={force}, noresume={no_resume})")
+                    await self._restart_session(state, f"명령 요청 (mode={mode})", mode=mode, force=force, no_resume=no_resume)
             except asyncio.CancelledError:
                 raise
             except BaseException as e:
@@ -431,9 +479,7 @@ class Supervisor:
                 for name, state in self.sessions.items():
                     if self._shutdown:
                         return
-                    # pause 플래그가 있으면 재시작 스킵
-                    pause_flag = Path(TELEGRAM_DIR) / f"pause_{name}.flag"
-                    if pause_flag.exists():
+                    if db.is_paused(name) or Path(TELEGRAM_DIR).joinpath(f"pause_{name}.flag").exists():
                         continue
                     status = self._assess_health(state)
                     if status == "DEAD":
@@ -560,7 +606,8 @@ class Supervisor:
 
     def _handle_command(self, text: str, bot_token: str) -> bool:
         """슈퍼바이저 명령어 처리. 처리했으면 True 반환."""
-        return handle_command(self, text, bot_token)
+        ch = self._channel_by_token(bot_token)
+        return handle_command(self, text, bot_token, ch)
 
     def _find_session_by_token(self, bot_token: str) -> str | None:
         for name, state in self.sessions.items():
@@ -604,6 +651,40 @@ class Supervisor:
             return save_path
         except Exception as e:
             log(f"{name}: 이미지 다운로드 실패: {e}")
+            return ""
+
+    async def _download_photo_via_channel(self, ch, file_id: str, name: str) -> str:
+        """channel.download_file()로 이미지 다운로드하여 로컬 경로 반환."""
+        try:
+            data = await ch.download_file(file_id)
+            if not data:
+                return ""
+            save_dir = os.path.join(LOGS_DIR, "images")
+            os.makedirs(save_dir, exist_ok=True)
+            save_path = os.path.join(save_dir, f"{name}_{int(time.time())}.jpg")
+            with open(save_path, "wb") as f:
+                f.write(data)
+            log(f"{name}: 이미지 다운로드 완료: {save_path}")
+            return save_path
+        except Exception as e:
+            log(f"{name}: 이미지 다운로드 실패: {e}")
+            return ""
+
+    async def _download_doc_via_channel(self, ch, file_id: str, file_name: str, name: str) -> str:
+        """channel.download_file()로 문서 다운로드하여 로컬 경로 반환."""
+        try:
+            data = await ch.download_file(file_id)
+            if not data:
+                return ""
+            save_dir = os.path.join(LOGS_DIR, "files")
+            os.makedirs(save_dir, exist_ok=True)
+            save_path = os.path.join(save_dir, file_name)
+            with open(save_path, "wb") as f:
+                f.write(data)
+            log(f"{name}: 파일 다운로드 완료: {save_path}")
+            return save_path
+        except Exception as e:
+            log(f"{name}: 파일 다운로드 실패: {e}")
             return ""
 
     @staticmethod
@@ -658,9 +739,8 @@ class Supervisor:
         # resume_count 초과
         if state.resume_count >= 2:
             log(f"{state.name}: 자동 재개 {state.resume_count}회 초과 → 중단")
-            send_telegram(
-                f"\u26a0\ufe0f {state.name}: 자동 재개 2회 실패, 중단했습니다. 수동 확인 필요.",
-                state.config["bot_token"], state.name,
+            state.channel.send_sync(
+                f"\u26a0\ufe0f {state.name}: 자동 재개 2회 실패, 중단했습니다. 수동 확인 필요."
             )
             state.resume_count = 0
             return False
@@ -697,9 +777,8 @@ class Supervisor:
                     await asyncio.sleep(2)
                 else:
                     log(f"{state.name}: client 없음, 재시도 소진 (10회/20초) → 메시지 드롭")
-                    send_telegram(
-                        f"❌ 세션 초기화 실패, 메시지 처리 불가\n원본: {msg_data['text'][:200]}",
-                        state.config["bot_token"], state.name,
+                    state.channel.send_sync(
+                        f"❌ 세션 초기화 실패, 메시지 처리 불가\n원본: {msg_data['text'][:200]}"
                     )
                 continue
 
@@ -713,9 +792,8 @@ class Supervisor:
                         log(f"{state.name}: 세션 미연결, 재시도 큐잉 ({retry+1}/1)")
                         await asyncio.sleep(2)
                     else:
-                        send_telegram(
-                            f"❌ 세션 연결 실패, 메시지 처리 불가\n원본: {msg_data['text'][:200]}",
-                            state.config["bot_token"], state.name,
+                        state.channel.send_sync(
+                            f"❌ 세션 연결 실패, 메시지 처리 불가\n원본: {msg_data['text'][:200]}"
                         )
                     continue
 
@@ -732,10 +810,8 @@ class Supervisor:
 
             # 대기 중이던 메시지 처리 시 구분선 전송 (이전 응답과 혼동 방지)
             if was_queued and not is_auto_resume:
-                await async_send_telegram(
-                    self._ahttp,
-                    f"── 대기 메시지 처리 ──\n💬 {text[:100]}",
-                    state.config["bot_token"], state.name,
+                await state.channel.send(
+                    f"── 대기 메시지 처리 ──\n💬 {text[:100]}"
                 )
 
             log(f"{state.name}: 메시지 처리 시작: {text[:50]}")
@@ -792,14 +868,13 @@ class Supervisor:
                         log(f"{state.name}: 타임아웃 재시도 큐잉 ({retry+1}/2)")
                         await asyncio.sleep((retry + 1) * 2)
                     else:
-                        send_telegram(
-                            f"❌ 응답 타임아웃 (재시도 소진)\n원본: {msg_data['text'][:200]}",
-                            state.config["bot_token"], state.name,
+                        state.channel.send_sync(
+                            f"❌ 응답 타임아웃 (재시도 소진)\n원본: {msg_data['text'][:200]}"
                         )
                     state.busy = False
                     continue
 
-                live_msg_id = 0  # 현재 editMessage 대상
+                live_msg_id = ""  # 현재 editMessage 대상 (str, channel 인터페이스)
                 live_lines = []  # 현재 메시지에 쌓인 텍스트
                 tool_lines = []  # 도구 호출 임시 버퍼 (텍스트 오면 정리)
                 last_tool_name = ""  # 마지막 도구명 (ToolResult 판별용)
@@ -810,6 +885,7 @@ class Supervisor:
                 consecutive_edit_fails = 0  # 연속 edit 실패 횟수
                 last_progress_notify = 0  # 마지막 중간 알림 시각
                 bot_token = state.config["bot_token"]
+                ch = state.channel
 
                 async for msg in client.receive_messages():
                     if msg is None:
@@ -826,10 +902,8 @@ class Supervisor:
                     elapsed = time.time() - state.busy_since
                     if elapsed > 120 and time.time() - last_progress_notify > 120:
                         mins = int(elapsed / 60)
-                        await async_send_telegram(
-                            self._ahttp,
-                            f"⏳ 아직 처리 중... ({mins}분 경과, 도구 {msg_count}회 호출)",
-                            bot_token, state.name,
+                        await ch.send(
+                            f"⏳ 아직 처리 중... ({mins}분 경과, 도구 {msg_count}회 호출)"
                         )
                         last_progress_notify = time.time()
                     msg_count += 1
@@ -875,9 +949,9 @@ class Supervisor:
                             if need_new_msg and len(live_lines) > 1:
                                 # 기존 메시지 마무리 후 새 메시지 시작 (2줄 이상일 때만)
                                 prev = "\n".join(live_lines[:-1])
-                                await async_edit_telegram(self._ahttp, prev, live_msg_id, bot_token, state.name)
+                                await ch.edit(live_msg_id, prev)
                                 new_start = live_lines[-1]
-                                live_msg_id = await async_send_telegram(self._ahttp, new_start, bot_token, state.name)
+                                live_msg_id = await ch.send(new_start)
                                 live_lines = [new_start]
                                 tool_lines = []
                                 last_edit = now
@@ -885,29 +959,29 @@ class Supervisor:
                                 # 첫 메시지: 3초 버퍼링 — 빠른 응답은 edit 없이 최종 send로
                                 elapsed_since_start = now - query_start
                                 if elapsed_since_start >= 3.0:
-                                    live_msg_id = await async_send_telegram(self._ahttp, content, bot_token, state.name)
+                                    live_msg_id = await ch.send(content)
                                     last_edit = now
                                 # 3초 미만이면 전송 보류 (최종 전송에서 한 번에)
                             elif now - last_edit >= edit_interval:
                                 # 4096자 한도 대비 여유 (prefix + 마진)
                                 max_len = 4096 - len(f"[{state.name}] ") - 50
-                                stable_content = _md_to_telegram_html(content)
+                                stable_content = ch.format(content)
                                 if len(content) > max_len:
                                     prev = "\n".join(live_lines[:-1]) if len(live_lines) > 1 else "\n".join(live_lines)
-                                    await async_edit_telegram(self._ahttp, _md_to_telegram_html(prev), live_msg_id, bot_token, state.name, use_html=True)
+                                    await ch.edit(live_msg_id, ch.format(prev), use_markup=True)
                                     new_start = live_lines[-1] if live_lines else ""
-                                    live_msg_id = await async_send_telegram(self._ahttp, new_start, bot_token, state.name)
+                                    live_msg_id = await ch.send(new_start)
                                     live_lines = [new_start] if new_start else []
                                     tool_lines = []
                                 else:
-                                    ok = await async_edit_telegram(self._ahttp, stable_content, live_msg_id, bot_token, state.name, use_html=True)
+                                    ok = await ch.edit(live_msg_id, stable_content, use_markup=True)
                                     if not ok:
                                         consecutive_edit_fails += 1
                                         if consecutive_edit_fails >= 3:
                                             # rate limit 대응: 간격 증가
                                             edit_interval = min(edit_interval * 2, 5.0)
                                             consecutive_edit_fails = 0
-                                        live_msg_id = await async_send_telegram(self._ahttp, stable_content, bot_token, state.name, use_html=True)
+                                        live_msg_id = await ch.send(stable_content, use_markup=True)
                                     else:
                                         consecutive_edit_fails = 0
                                         # 성공 시 간격 점진 복원
@@ -936,10 +1010,10 @@ class Supervisor:
                                         tl = self._format_tool_line(tool_lines)
                                         prev_content = f"{prev_content}\n{tl}" if prev_content else tl
                                     if prev_content:
-                                        await async_edit_telegram(self._ahttp, prev_content, live_msg_id, bot_token, state.name)
+                                        await ch.edit(live_msg_id, prev_content)
                                     tool_lines = []
                                     live_lines = []
-                                    live_msg_id = None
+                                    live_msg_id = ""
                                 # JSON {"result":"..."} 파싱
                                 display_text = result_text
                                 try:
@@ -974,17 +1048,17 @@ class Supervisor:
                                 display.append(self._format_tool_line(tool_lines))
                             content = "\n".join(display)
                             if not live_msg_id:
-                                live_msg_id = await async_send_telegram(self._ahttp, _md_to_telegram_html(content), bot_token, state.name, use_html=True)
+                                live_msg_id = await ch.send(ch.format(content), use_markup=True)
                                 last_edit = now
                             elif now - last_edit >= edit_interval:
-                                stable_content = _md_to_telegram_html(content)
-                                ok = await async_edit_telegram(self._ahttp, stable_content, live_msg_id, bot_token, state.name, use_html=True)
+                                stable_content = ch.format(content)
+                                ok = await ch.edit(live_msg_id, stable_content, use_markup=True)
                                 if not ok:
                                     consecutive_edit_fails += 1
                                     if consecutive_edit_fails >= 3:
                                         edit_interval = min(edit_interval * 2, 5.0)
                                         consecutive_edit_fails = 0
-                                    live_msg_id = await async_send_telegram(self._ahttp, stable_content, bot_token, state.name, use_html=True)
+                                    live_msg_id = await ch.send(stable_content, use_markup=True)
                                 else:
                                     consecutive_edit_fails = 0
                                     if edit_interval > 1.0:
@@ -1005,39 +1079,32 @@ class Supervisor:
                 if live_lines:
                     content = "\n".join(live_lines)
                     # plain text에서 분할 후 각 청크별 HTML 변환 (태그 절단 방지)
-                    chunks = [_md_to_telegram_html(c) for c in _split_message(content)]
+                    chunks = [ch.format(c) for c in ch.split(content)]
                     elapsed = time.time() - query_start
                     # 빠른 응답(3초 이내): editMessage 대신 새 메시지로 전송
                     # → editMessage 지연으로 인한 "답변 밀림" 방지
                     if live_msg_id and elapsed >= 3.0:
-                        ok = await async_edit_telegram(self._ahttp, chunks[0], live_msg_id, bot_token, state.name, use_html=True)
+                        ok = await ch.edit(live_msg_id, chunks[0], use_markup=True)
                         if not ok:
-                            await async_edit_telegram(self._ahttp, _split_message(content)[0], live_msg_id, bot_token, state.name)
+                            await ch.edit(live_msg_id, ch.split(content)[0])
                         for chunk in chunks[1:]:
-                            await async_send_telegram(self._ahttp, chunk, bot_token, state.name, use_html=True)
+                            await ch.send(chunk, use_markup=True)
                     else:
                         # 빠른 응답이거나 live_msg_id 없음: 새 메시지로 전송
                         if live_msg_id:
                             # 기존 live 메시지 삭제 (중복 방지)
-                            try:
-                                await self._ahttp.post(
-                                    f"https://api.telegram.org/bot{bot_token}/deleteMessage",
-                                    json={"chat_id": CHAT_ID, "message_id": live_msg_id},
-                                    timeout=5,
-                                )
-                            except Exception:
-                                pass
+                            await ch.delete(live_msg_id)
                         for chunk in chunks:
-                            await async_send_telegram(self._ahttp, chunk, bot_token, state.name, use_html=True)
+                            await ch.send(chunk, use_markup=True)
                     log(f"{state.name}: 최종 전송 ({len(content)}자, {len(chunks)}청크, {elapsed:.1f}s)")
                 else:
                     log(f"{state.name}: 빈 응답")
-                    await async_send_telegram(self._ahttp, "⚠️ 빈 응답", bot_token, state.name)
+                    await ch.send("⚠️ 빈 응답")
 
                 log(f"{state.name}: 처리 완료")
 
                 # 처리 완료 알림 (새 메시지, 알림 옴)
-                asyncio.create_task(async_send_telegram(self._ahttp, "✅", bot_token, state.name))
+                asyncio.create_task(ch.send("✅"))
 
                 # 처리 완료 후 offset 확정 (재시작 시 미처리 메시지 재수신 보장)
                 processed_update_id = msg_data.get("update_id", 0)
@@ -1067,9 +1134,8 @@ class Supervisor:
                 # 이미지 누적 에러 → 자동 reset (resume으로는 해결 불가)
                 if "dimension limit" in err_str or "many-image" in err_str:
                     log(f"{state.name}: 이미지 누적 에러 감지 → reset 모드 재시작")
-                    send_telegram(
-                        f"⚠️ 이미지 누적으로 컨텍스트 초과\n자동 reset 진행",
-                        state.config["bot_token"], state.name,
+                    state.channel.send_sync(
+                        "⚠️ 이미지 누적으로 컨텍스트 초과\n자동 reset 진행"
                     )
                     await self._restart_session(state, "이미지 누적 에러", mode="reset", force=True)
                     continue
@@ -1088,9 +1154,8 @@ class Supervisor:
                         log(f"{state.name}: 에러 재시도 큐잉 ({retry+1}/1)")
                         await asyncio.sleep(2)
                     else:
-                        send_telegram(
-                            f"❌ 처리 실패: {e}\n원본: {msg_data['text'][:200]}",
-                            state.config["bot_token"], state.name,
+                        state.channel.send_sync(
+                            f"❌ 처리 실패: {e}\n원본: {msg_data['text'][:200]}"
                         )
                 if state.error_count >= 3:
                     await self._restart_session(state, f"연속 에러 {state.error_count}회")
@@ -1103,29 +1168,22 @@ class Supervisor:
         name = state.name
         bot_token = state.config["bot_token"]
         bot_id = state.config["bot_id"]
+        ch = state.channel
 
         # offset 복원 (저장된 offset이 있으면 사용, 없으면 flush)
         saved_offset = self._load_offset(bot_id)
         if saved_offset is not None:
             self._update_ids[bot_id] = saved_offset
+            ch.set_offset(saved_offset + 1)
             log(f"{name}: offset 복원 = {saved_offset}")
         else:
+            # flush: 기존 메시지를 모두 소비하여 offset 초기화
             try:
-                r = await self._ahttp.get(
-                    f"https://api.telegram.org/bot{bot_token}/getUpdates",
-                    params={"timeout": 0}, timeout=10,
-                )
-                results = r.json().get("result", [])
-                if results:
-                    last_id = max(u["update_id"] for u in results)
-                    await self._ahttp.get(
-                        f"https://api.telegram.org/bot{bot_token}/getUpdates",
-                        params={"offset": last_id + 1, "timeout": 0}, timeout=10,
-                    )
-                    self._update_ids[bot_id] = last_id
-                else:
-                    self._update_ids[bot_id] = 0
-                log(f"{name}: offset 초기화 = {self._update_ids[bot_id]} (flushed {len(results)})")
+                flush_msgs = await ch.poll(timeout=0)
+                # poll 내부에서 offset이 자동 갱신됨
+                last_offset = ch.get_offset() - 1 if ch.get_offset() > 0 else 0
+                self._update_ids[bot_id] = last_offset
+                log(f"{name}: offset 초기화 = {last_offset} (flushed {len(flush_msgs)})")
             except Exception as e:
                 log(f"{name}: offset 초기화 실패: {e}")
                 self._update_ids[bot_id] = 0
@@ -1136,95 +1194,65 @@ class Supervisor:
             _poll_count += 1
             if _poll_count % 20 == 0:  # ~10분마다 (25초 long poll × 20)
                 log(f"{name}: 폴링 루프 정상 (cycle={_poll_count}, errors={error_count})")
-            last_id = self._update_ids.get(bot_id, 0)
             try:
-                r = await self._ahttp.get(
-                    f"https://api.telegram.org/bot{bot_token}/getUpdates",
-                    params={
-                        "offset": last_id + 1,
-                        "timeout": 25,
-                        "allowed_updates": ["message", "edited_message"],
-                    },
-                    timeout=35,
-                )
-                r.raise_for_status()
-                updates = r.json().get("result", [])
-                for u in updates:
-                    update_id = u["update_id"]
-                    msg = u.get("message") or u.get("edited_message") or {}
-                    is_edited = "edited_message" in u
-                    chat_id = str(msg.get("chat", {}).get("id", ""))
-                    if chat_id != CHAT_ID:
-                        self._update_ids[bot_id] = update_id
+                messages = await ch.poll(timeout=25)
+                for m in messages:
+                    raw = m.get("_raw", {})
+                    msg_id_str = m["id"]
+                    msg_id = int(msg_id_str) if msg_id_str else 0
+                    from_id = m.get("from_id", "")
+                    if from_id and from_id != CHAT_ID:
                         continue
-                    msg_date = msg.get("date", 0)
+                    msg_date = m.get("date", 0)
                     if msg_date < self._start_time:
                         log(f"{name}: 오래된 메시지 스킵 (date={msg_date})")
-                        self._update_ids[bot_id] = update_id
                         continue
-                    msg_id = msg.get("message_id", 0)
-                    text = msg.get("text", "")
+                    text = m.get("text", "")
+                    is_edited = raw.get("_is_edited", False) if raw else False
+                    files = m.get("files", [])
 
                     # 이미지 메시지 처리
-                    if not text and msg.get("photo"):
-                        photo_path = await self._download_photo(msg, bot_token, name)
-                        if photo_path:
-                            caption = msg.get("caption", "")
-                            text = f"이 이미지를 확인해줘: {photo_path}"
-                            if caption:
-                                text = f"{caption}\n\n이미지: {photo_path}"
-
-                    # 문서/파일 메시지 처리
-                    if not text and msg.get("document"):
-                        doc = msg["document"]
-                        file_name = doc.get("file_name", "unknown")
-                        file_id = doc.get("file_id", "")
-                        caption = msg.get("caption", "")
-                        if file_id:
-                            try:
-                                fr = await self._ahttp.get(
-                                    f"https://api.telegram.org/bot{bot_token}/getFile",
-                                    params={"file_id": file_id}, timeout=10,
-                                )
-                                file_path = fr.json().get("result", {}).get("file_path", "")
-                                if file_path:
-                                    dl_url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
-                                    save_dir = os.path.join(LOGS_DIR, "files")
-                                    os.makedirs(save_dir, exist_ok=True)
-                                    save_path = os.path.join(save_dir, file_name)
-                                    dr = await self._ahttp.get(dl_url, timeout=30)
-                                    with open(save_path, "wb") as f:
-                                        f.write(dr.content)
-                                    log(f"{name}: 파일 다운로드 완료: {save_path}")
-                                    text = f"이 파일을 확인해줘: {save_path}"
+                    if not text and files:
+                        for f_info in files:
+                            if f_info.get("type") == "photo":
+                                photo_path = await self._download_photo_via_channel(ch, f_info["file_id"], name)
+                                if photo_path:
+                                    caption = raw.get("caption", "") if raw else ""
+                                    text = f"이 이미지를 확인해줘: {photo_path}"
                                     if caption:
-                                        text = f"{caption}\n\n파일: {save_path}"
-                            except Exception as e:
-                                log(f"{name}: 파일 다운로드 실패: {e}")
+                                        text = f"{caption}\n\n이미지: {photo_path}"
+                                break
+                            elif f_info.get("type") == "document":
+                                file_id = f_info.get("file_id", "")
+                                file_name = f_info.get("name", "unknown")
+                                caption = raw.get("caption", "") if raw else ""
+                                if file_id:
+                                    doc_path = await self._download_doc_via_channel(ch, file_id, file_name, name)
+                                    if doc_path:
+                                        text = f"이 파일을 확인해줘: {doc_path}"
+                                        if caption:
+                                            text = f"{caption}\n\n파일: {doc_path}"
+                                break
 
                     if not text:
-                        self._update_ids[bot_id] = update_id
                         continue
 
                     if self._handle_command(text, bot_token):
                         log(f"{name}: 명령어 처리: {text}")
-                        self._update_ids[bot_id] = update_id
                         continue
 
-                    sender = msg.get("from", {}).get("first_name", "")
+                    sender = raw.get("from", {}).get("first_name", "") if raw else ""
                     edit_tag = " [수정]" if is_edited else ""
                     full_text = f"{sender}{edit_tag}: {text}"
 
                     # 중복 메시지 제거 (message_id 기반)
                     msg_key = f"{name}_{msg_id}"
                     if msg_key in self._last_msg_map:
-                        self._update_ids[bot_id] = update_id
                         continue
                     # 네트워크 재전송 중복 제거 (같은 date + 같은 텍스트)
                     msg_date_key = f"{name}_d{msg_date}_{text}"
                     if msg_date_key in self._last_msg_map:
                         log(f"{name}: 동일 date+텍스트 중복 스킵 (date={msg_date}): {text[:30]}")
-                        self._update_ids[bot_id] = update_id
                         continue
                     self._last_msg_map[msg_key] = time.time()
                     self._last_msg_map[msg_date_key] = time.time()
@@ -1234,23 +1262,21 @@ class Supervisor:
                         self._last_msg_map = {k: v for k, v in self._last_msg_map.items() if v > cutoff}
 
                     # pause 상태: restart/reset 명령은 통과, 나머지 거부
-                    pause_flag = Path(TELEGRAM_DIR) / f"pause_{name}.flag"
-                    if pause_flag.exists():
+                    _is_paused = db.is_paused(name) or Path(TELEGRAM_DIR).joinpath(f"pause_{name}.flag").exists()
+                    if _is_paused:
                         text_lower = text.strip().lower()
                         if text_lower in ("restart", "reset", "재시작", "리셋", "/restart", "/reset"):
-                            # pause 해제 + restart flag 생성
-                            pause_flag.unlink(missing_ok=True)
+                            # pause 해제 + restart 명령 (DB + flag 양쪽)
+                            Path(TELEGRAM_DIR).joinpath(f"pause_{name}.flag").unlink(missing_ok=True)
+                            db.set_paused(name, False)
                             mode = "reset" if "reset" in text_lower or "리셋" in text_lower else "resume"
-                            restart_flag = Path(TELEGRAM_DIR) / f"restart_request_{name}.flag"
-                            restart_flag.write_text(f"force,{mode}" if mode != "resume" else "force")
-                            await async_send_telegram(self._ahttp, f"▶️ {name} pause 해제 + 재시작 요청됨", bot_token, name, reply_to=msg_id)
-                            self._update_ids[bot_id] = update_id
-                            self._save_offset(bot_id, update_id)
+                            db.push_command(name, "restart", f"force,{mode}" if mode != "resume" else "force")
+                            await ch.send(f"▶️ {name} pause 해제 + 재시작 요청됨", reply_to=msg_id_str)
+                            self._save_offset(bot_id, ch.get_offset() - 1)
                             log(f"{name}: PAUSED → 해제 (텔레그램 명령: {text_lower})")
                             continue
-                        await async_send_telegram(self._ahttp, f"⏸️ {name} 일시정지 중. restart 또는 reset을 입력하세요.", bot_token, name, reply_to=msg_id)
-                        self._update_ids[bot_id] = update_id
-                        self._save_offset(bot_id, update_id)
+                        await ch.send(f"⏸️ {name} 일시정지 중. restart 또는 reset을 입력하세요.", reply_to=msg_id_str)
+                        self._save_offset(bot_id, ch.get_offset() - 1)
                         log(f"{name}: PAUSED — 메시지 거부: {text[:50]}")
                         continue
 
@@ -1260,7 +1286,10 @@ class Supervisor:
                         ack = f"✔️ (처리 중, 대기 {qsize}건)"
                     else:
                         ack = "✔️"
-                    await async_send_telegram(self._ahttp, ack, bot_token, name, reply_to=msg_id)
+                    await ch.send(ack, reply_to=msg_id_str)
+
+                    # update_id 추적 (channel.poll이 offset 자동 관리하므로 현재 offset - 1)
+                    update_id = ch.get_offset() - 1
 
                     await state.message_queue.put({
                         "text": full_text,
@@ -1269,7 +1298,7 @@ class Supervisor:
                         "retry_count": 0,
                         "queued_while_busy": state.busy,
                     })
-                    # 큐에 넣은 즉시 offset 갱신 (재폴링 방지) + 파일 저장
+                    # 큐에 넣은 즉시 offset 갱신 + 파일 저장
                     self._update_ids[bot_id] = update_id
                     self._save_offset(bot_id, update_id)
                     log(f"{name}: 메시지 수신: {text[:50]}")
@@ -1285,7 +1314,7 @@ class Supervisor:
 
     async def shutdown(self):
         self._shutdown = True
-        _notify_all("[HUB] 슈퍼바이저 종료 중...")
+        self._broadcast_sync("[HUB] 슈퍼바이저 종료 중...")
         if self._ahttp:
             await self._ahttp.aclose()
         # ask 클라이언트 정리
