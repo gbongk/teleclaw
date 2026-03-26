@@ -124,34 +124,32 @@ All Telegram messages, CLI output, and system notifications will use the selecte
 
 ### Run
 
-TeleClaw has a two-layer architecture:
+```bash
+# Install as system service (recommended)
+# Starts immediately + auto-start on boot/login
+teleclaw install
 
+# Management commands
+teleclaw status        # check if running
+teleclaw logs          # view logs
+teleclaw uninstall     # remove service
+```
+
+Or run manually:
+```bash
+# With auto-restart wrapper
+python teleclaw-wrapper.py
+
+# Direct (no auto-restart, for debugging)
+teleclaw
+```
+
+**Architecture:**
 ```
 teleclaw-wrapper.py          ← Process guardian (auto-restart, exponential backoff)
     └── teleclaw (hub)       ← Core (session management, Telegram polling)
             └── Claude Code SDK sessions (one per project)
 ```
-
-**Option A: With wrapper (recommended for production)**
-```bash
-python teleclaw-wrapper.py
-```
-The wrapper automatically restarts TeleClaw if it crashes, with exponential backoff (3s → 30min max). Even during backoff, it polls Telegram for emergency commands (`/restart`, `/kill`).
-
-**Option B: Direct (for development/debugging)**
-```bash
-teleclaw
-```
-No auto-restart. If TeleClaw crashes, it stays down.
-
-**Option C: System service (recommended for servers)**
-```bash
-teleclaw install       # systemd (Linux) or Task Scheduler (Windows)
-teleclaw status        # check service status
-teleclaw logs          # view logs
-teleclaw uninstall     # remove service
-```
-This registers `teleclaw-wrapper.py` as a system service that starts on boot/login.
 
 ## Telegram Commands
 
