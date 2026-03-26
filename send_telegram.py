@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""텔레그램으로 이미지/파일 전송 CLI 래퍼.
+"""텔레그램으로 텍스트/이미지/파일 전송 CLI.
 
 Usage:
+    python send_telegram.py text  <message>
     python send_telegram.py photo <path> [caption]
     python send_telegram.py file  <path> [caption]
 """
@@ -30,18 +31,15 @@ def _match_project():
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Usage: send_telegram.py <photo|file> <path> [caption]")
+        print("Usage: send_telegram.py <text|photo|file> <message|path> [caption]")
         sys.exit(1)
 
     kind = sys.argv[1]
-    path = sys.argv[2]
+    arg = sys.argv[2]
     caption = sys.argv[3] if len(sys.argv) > 3 else ""
 
-    if kind not in ("photo", "file"):
-        print("First argument must be 'photo' or 'file'")
-        sys.exit(1)
-    if not os.path.exists(path):
-        print(f"File not found: {path}")
+    if kind not in ("text", "photo", "file"):
+        print("First argument must be 'text', 'photo', or 'file'")
         sys.exit(1)
 
     bot_token, proj_name = _match_project()
@@ -49,13 +47,23 @@ if __name__ == "__main__":
         print("No telegram config found")
         sys.exit(1)
 
-    if kind == "photo":
-        mid = tg.send_photo_sync(bot_token, path, caption)
+    if kind == "text":
+        mid = tg.send_telegram(arg, bot_token)
+        if mid:
+            print("Sent")
+        else:
+            print("Send failed", file=sys.stderr)
+            sys.exit(1)
     else:
-        mid = tg.send_file_sync(bot_token, path, caption)
-
-    if mid:
-        print(f"Sent: {kind} {os.path.basename(path)}")
-    else:
-        print("Send failed", file=sys.stderr)
-        sys.exit(1)
+        if not os.path.exists(arg):
+            print(f"File not found: {arg}")
+            sys.exit(1)
+        if kind == "photo":
+            mid = tg.send_photo_sync(bot_token, arg, caption)
+        else:
+            mid = tg.send_file_sync(bot_token, arg, caption)
+        if mid:
+            print(f"Sent: {kind} {os.path.basename(arg)}")
+        else:
+            print("Send failed", file=sys.stderr)
+            sys.exit(1)
