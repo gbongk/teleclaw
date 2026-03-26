@@ -23,21 +23,25 @@ Keep Claude Code working on your projects while you're away from your desk — m
 ## Architecture
 
 ```
-Telegram (mobile)
-    | long poll (25s)
-    v
-TeleClaw (asyncio)
-    +-- Bot poll loop (x N projects)
-    +-- Session loop (x N) -- SDK query + streaming response
-    +-- Health check loop (every 2 min)
-    +-- Flag watch loop (every 1s)
-    +-- Watchdog loop (every 5 min)
-    |
-    v
-Claude Code SDK (claude-code-sdk)
-    |
-    v
-Claude Code sessions (independent per project)
+┌──────────────┐
+│   Telegram   │  You send a message from your phone
+└──────┬───────┘
+       │ long poll
+┌──────▼───────────────────────────────────┐
+│            TeleClaw (asyncio)            │
+│                                          │
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐    │
+│  │ Project1│ │ Project2│ │ Project3│ .. │  N independent sessions
+│  │  bot    │ │  bot    │ │  bot    │    │
+│  └────┬────┘ └────┬────┘ └────┬────┘    │
+│       │           │           │          │
+│  Health check (2min) · Watchdog (5min)   │
+└───────┼───────────┼───────────┼──────────┘
+        │           │           │
+┌───────▼───────────▼───────────▼──────────┐
+│          Claude Code SDK sessions         │
+│   (persistent context, auto-resume)       │
+└──────────────────────────────────────────┘
 ```
 
 ## Quick Start
