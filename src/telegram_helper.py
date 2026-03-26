@@ -9,11 +9,8 @@ Usage:
 import os
 import sys
 
-_SUPERVISOR_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _SUPERVISOR_DIR)
-
-from src.config import PROJECTS, CHAT_ID
-from src import telegram_api as tg
+from .config import PROJECTS, CHAT_ID
+from . import telegram_api as tg
 
 
 def _match_project():

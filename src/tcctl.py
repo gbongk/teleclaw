@@ -29,12 +29,8 @@ LOGS_DIR = SUPERVISOR_DIR / "logs"
 STATUS_FILE = LOGS_DIR / "hub_status.json"
 LOG_FILE = LOGS_DIR / "teleclaw.log"
 
-# hub 패키지 import를 위해 SUPERVISOR_DIR을 path에 추가
-if str(SUPERVISOR_DIR) not in sys.path:
-    sys.path.insert(0, str(SUPERVISOR_DIR))
-
-from src.messages import msg
-from src.config import PROJECTS
+from .messages import msg
+from .config import PROJECTS
 
 SESSION_NAMES = list(PROJECTS.keys())
 CWD_MAP = {}
@@ -268,7 +264,7 @@ def cmd_pause(arg):
     pi = all_procs["sessions"].get(name)
     if pi and pi.get("pid"):
         try:
-            from src.process_utils import kill_pid
+            from .process_utils import kill_pid
             kill_pid(pi["pid"])
             print(msg("svctl_paused", name=name, pid=pi['pid']))
         except Exception:
@@ -316,7 +312,7 @@ def cmd_usage():
 
     from datetime import datetime, timezone
 
-    from src.usage_fmt import usage_bar as _bar, reset_str as _reset_str
+    from .usage_fmt import usage_bar as _bar, reset_str as _reset_str
 
     five = data.get("five_hour", {})
     seven = data.get("seven_day", {})

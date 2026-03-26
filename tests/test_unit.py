@@ -395,15 +395,8 @@ class TestHandleEmergencyCommand(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        # teleclaw-wrapper.py는 하이픈이 있어서 importlib 사용
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "teleclaw_wrapper",
-            os.path.join(os.path.dirname(__file__), "..", "teleclaw-wrapper.py"),
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        mod.tg_send = lambda text: None  # 모킹 (exec 후)
+        from src import wrapper as mod
+        mod.tg_send = lambda text: None
         cls._func = staticmethod(mod.handle_emergency_command)
 
     def test_restart(self):
