@@ -2,7 +2,7 @@
 
 import asyncio
 
-from .config import PROJECTS, CHAT_ID, SUPERVISOR_DIR, LOGS_DIR
+from .config import PROJECTS, CHAT_ID, TELECLAW_DIR, LOGS_DIR
 from .logging_utils import log, _find_existing_teleclaw, _write_lock, _release_lock
 from .channel import Channel
 from .channel_telegram import TelegramChannel

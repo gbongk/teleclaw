@@ -5,8 +5,8 @@ import sys
 
 # --- config.yaml 로드 ---
 
-_SUPERVISOR_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_CONFIG_PATH = os.path.join(_SUPERVISOR_DIR, "config.yaml")
+_TELECLAW_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_CONFIG_PATH = os.path.join(_TELECLAW_DIR, "config.yaml")
 
 
 def _load_yaml(path: str) -> dict:
@@ -81,14 +81,13 @@ for name, info in _cfg.get("projects", {}).items():
 
 # --- 경로 ---
 
-SUPERVISOR_DIR = _SUPERVISOR_DIR
-LOGS_DIR = os.path.join(SUPERVISOR_DIR, "logs")
+TELECLAW_DIR = _TELECLAW_DIR
+LOGS_DIR = os.path.join(TELECLAW_DIR, "logs")
 LOG_FILE = os.path.join(LOGS_DIR, "teleclaw.log")
 LOCK_FILE = os.path.join(LOGS_DIR, "teleclaw.lock")
-STATUS_FILE = os.path.join(LOGS_DIR, "hub_status.json")
+STATUS_FILE = os.path.join(LOGS_DIR, "teleclaw_status.json")
 SESSION_IDS_FILE = os.path.join(LOGS_DIR, "session_ids.json")
-DATA_DIR = os.path.join(SUPERVISOR_DIR, "data")
-TELEGRAM_DIR = DATA_DIR
+DATA_DIR = os.path.join(TELECLAW_DIR, "data")
 CLAUDE_SESSIONS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "sessions")
 
 # --- 상수 ---

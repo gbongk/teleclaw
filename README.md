@@ -161,6 +161,29 @@ teleclaw
 | `/ask <question>` | Quick question (separate session) |
 | `/help` (`/h`) | Command list |
 
+## CLI Commands
+
+`teleclaw_ctl` provides the same management from the terminal:
+
+```bash
+python -m src.teleclaw_ctl <command> [args]
+```
+
+| Command | Short | Description |
+|---|---|---|
+| `sys` | | System CPU/RAM status |
+| `ps` | `s` | Process list (PID, memory, Q/E/R) |
+| `ctx` | `c` | Context window usage per session |
+| `usage` | `u` | Token usage (5h/7d) |
+| `restart [name]` | `r` | Restart session (default: current project) |
+| `tc` | | Restart TeleClaw itself |
+| `reset [name]` | | Reset session (clear context) |
+| `pause [name]` | `p` | Pause session |
+| `log [N]` | `l` | Recent logs (default 20 lines) |
+| `help` | `h` | Command list |
+
+All state (pause, restart commands) is stored in SQLite — no flag files.
+
 ## Auto-Recovery
 
 TeleClaw has two layers of protection:
@@ -176,7 +199,7 @@ DEAD/STUCK triggers automatic `_restart_session()` with resume.
 
 ### 2. Wrapper (process level)
 
-`teleclaw-teleclaw_daemon.py` monitors the TeleClaw process itself:
+`teleclaw_daemon.py` monitors the TeleClaw process itself:
 
 ```
 Normal exit (alive > 30s)  →  restart after 3s

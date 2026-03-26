@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from .config import (
-    SUPERVISOR_DIR, LOGS_DIR, LOG_FILE, TELEGRAM_DIR,
+    LOGS_DIR, LOG_FILE,
 )
 from .logging_utils import log
 from .messages import msg
@@ -147,15 +147,9 @@ def handle_command(teleclaw, text: str, bot_token: str, channel) -> bool:
         if name and name.lower() == "teleclaw":
             channel.send_sync(msg("sv_restart_requested"))
             db.push_command("teleclaw", "restart", "force")
-            Path(TELEGRAM_DIR).joinpath("restart_request_teleclaw.flag").write_text("force")
             return True
         if name and name in teleclaw.sessions:
-            # pause 해제 (DB + flag)
             db.set_paused(name, False)
-            pause_flag = Path(TELEGRAM_DIR) / f"pause_{name}.flag"
-            if pause_flag.exists():
-                pause_flag.unlink(missing_ok=True)
-                log(f"{name}: pause 해제됨 (/restart 명령)")
             asyncio.create_task(teleclaw._restart_session(teleclaw.sessions[name], "/restart 명령", mode="resume", force=True, no_resume=no_resume))
             tag = " (noresume)" if no_resume else ""
             channel.send_sync(msg("restart_requested", name=name, tag=tag))
@@ -170,11 +164,10 @@ def handle_command(teleclaw, text: str, bot_token: str, channel) -> bool:
         else:
             name = _find_session_by_token(teleclaw.sessions, bot_token)
         if name and name in teleclaw.sessions:
-            if db.is_paused(name) or Path(TELEGRAM_DIR).joinpath(f"pause_{name}.flag").exists():
+            if db.is_paused(name):
                 channel.send_sync(msg("already_paused", name=name))
                 return True
             db.set_paused(name, True)
-            Path(TELEGRAM_DIR).joinpath(f"pause_{name}.flag").write_text(str(int(time.time())))
             # 세션 disconnect
             state = teleclaw.sessions[name]
             old_client = state.client
@@ -211,10 +204,6 @@ def handle_command(teleclaw, text: str, bot_token: str, channel) -> bool:
             name = _find_session_by_token(teleclaw.sessions, bot_token)
         if name and name in teleclaw.sessions:
             db.set_paused(name, False)
-            pause_flag = Path(TELEGRAM_DIR) / f"pause_{name}.flag"
-            if pause_flag.exists():
-                pause_flag.unlink(missing_ok=True)
-                log(f"{name}: pause 해제됨 (/reset 명령)")
             asyncio.create_task(teleclaw._restart_session(teleclaw.sessions[name], "/reset 명령 (컨텍스트 초기화)", mode="reset", force=True))
             channel.send_sync(msg("reset_requested", name=name))
         elif name:
@@ -315,7 +304,7 @@ def handle_command(teleclaw, text: str, bot_token: str, channel) -> bool:
             # TeleClaw self
             sv_proc = psutil.Process()
             sv_mem = sv_proc.memory_info().rss / (1024**2)
-            lines.append(msg("sys_supervisor", pid=sv_proc.pid, mem=sv_mem))
+            lines.append(msg("sys_teleclaw", pid=sv_proc.pid, mem=sv_mem))
         except ImportError:
             lines.append(msg("sys_no_psutil"))
         except Exception as e:

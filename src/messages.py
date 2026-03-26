@@ -2,7 +2,7 @@
 
 사용법:
     from .messages import msg
-    msg("restart_done", name="Converter")  # → "[SV] Converter: 재시작 완료, ..."
+    msg("restart_done", name="Converter")  # → "[TC] Converter: 재시작 완료, ..."
 """
 
 from .config import LANG
@@ -14,8 +14,8 @@ _MESSAGES = {
         "en": "[HUB] TeleClaw starting",
     },
     "sv_ready": {
-        "ko": "[SV] 시작 완료 — 메시지 수신 준비됨",
-        "en": "[SV] Ready — waiting for messages",
+        "ko": "[TC] 시작 완료 — 메시지 수신 준비됨",
+        "en": "[TC] Ready — waiting for messages",
     },
     "sv_init_done": {
         "ko": "[HUB] 초기화 완료 ({elapsed}초) — {names} 연결됨",
@@ -26,8 +26,8 @@ _MESSAGES = {
         "en": "[HUB] task[{i}] error: {error}",
     },
     "sv_connected": {
-        "ko": "[SV] {name}: 연결 완료",
-        "en": "[SV] {name}: connected",
+        "ko": "[TC] {name}: 연결 완료",
+        "en": "[TC] {name}: connected",
     },
     "sv_shutting_down": {
         "ko": "[HUB] TeleClaw 종료 중...",
@@ -40,38 +40,38 @@ _MESSAGES = {
 
     # --- 세션 재시작 ---
     "restart_reason": {
-        "ko": "[SV] {name}: {reason} → 재시작",
-        "en": "[SV] {name}: {reason} → restarting",
+        "ko": "[TC] {name}: {reason} → 재시작",
+        "en": "[TC] {name}: {reason} → restarting",
     },
     "restart_done": {
-        "ko": "[SV] {name}: 재시작 완료, 메시지 수신 준비됨",
-        "en": "[SV] {name}: restart complete, ready for messages",
+        "ko": "[TC] {name}: 재시작 완료, 메시지 수신 준비됨",
+        "en": "[TC] {name}: restart complete, ready for messages",
     },
     "restart_limit": {
         "ko": "[WARN] {name}: 재시작 한도 초과 ({max}회/{window}분)\n사유: {reason}\n{remaining}초 후 자동 재시도",
         "en": "[WARN] {name}: restart limit reached ({max}/{window}min)\nReason: {reason}\nAuto-retry in {remaining}s",
     },
     "restart_requested": {
-        "ko": "[SV] {name} 재시작 요청됨{tag}",
-        "en": "[SV] {name} restart requested{tag}",
+        "ko": "[TC] {name} 재시작 요청됨{tag}",
+        "en": "[TC] {name} restart requested{tag}",
     },
     "reset_requested": {
-        "ko": "[SV] {name} 리셋 요청됨",
-        "en": "[SV] {name} reset requested",
+        "ko": "[TC] {name} 리셋 요청됨",
+        "en": "[TC] {name} reset requested",
     },
     "sv_restart_requested": {
-        "ko": "[SV] TeleClaw 재시작합니다...",
-        "en": "[SV] TeleClaw restarting...",
+        "ko": "[TC] TeleClaw 재시작합니다...",
+        "en": "[TC] TeleClaw restarting...",
     },
 
     # --- 세션 에러 ---
     "session_not_found": {
-        "ko": "[SV] 세션 '{name}' 없음. 가능: {available}",
-        "en": "[SV] Session '{name}' not found. Available: {available}",
+        "ko": "[TC] 세션 '{name}' 없음. 가능: {available}",
+        "en": "[TC] Session '{name}' not found. Available: {available}",
     },
     "session_not_connected": {
-        "ko": "[SV] {name}: 연결 안 됨",
-        "en": "[SV] {name}: not connected",
+        "ko": "[TC] {name}: 연결 안 됨",
+        "en": "[TC] {name}: not connected",
     },
     "session_init_fail": {
         "ko": "❌ 세션 초기화 실패, 메시지 처리 불가\n원본: {text}",
@@ -118,12 +118,12 @@ _MESSAGES = {
 
     # --- pause/wakeup ---
     "paused": {
-        "ko": "[SV] {name} 일시정지됨",
-        "en": "[SV] {name} paused",
+        "ko": "[TC] {name} 일시정지됨",
+        "en": "[TC] {name} paused",
     },
     "already_paused": {
-        "ko": "[SV] {name} 이미 일시정지 상태입니다",
-        "en": "[SV] {name} already paused",
+        "ko": "[TC] {name} 이미 일시정지 상태입니다",
+        "en": "[TC] {name} already paused",
     },
     "pause_unpause_restart": {
         "ko": "▶️ {name} pause 해제 + 재시작 요청됨",
@@ -136,68 +136,68 @@ _MESSAGES = {
 
     # --- interrupt ---
     "interrupted": {
-        "ko": "[SV] {name}: 작업 중단됨",
-        "en": "[SV] {name}: interrupted",
+        "ko": "[TC] {name}: 작업 중단됨",
+        "en": "[TC] {name}: interrupted",
     },
     "interrupt_fail": {
-        "ko": "[SV] {name}: interrupt 실패 ({error})",
-        "en": "[SV] {name}: interrupt failed ({error})",
+        "ko": "[TC] {name}: interrupt 실패 ({error})",
+        "en": "[TC] {name}: interrupt failed ({error})",
     },
 
     # --- /ask ---
     "ask_busy": {
-        "ko": "[SV] /ask 처리 중입니다. 잠시 후 다시 시도하세요.",
-        "en": "[SV] /ask is busy. Please try again later.",
+        "ko": "[TC] /ask 처리 중입니다. 잠시 후 다시 시도하세요.",
+        "en": "[TC] /ask is busy. Please try again later.",
     },
     "ask_connect_fail": {
-        "ko": "[SV] ask 세션 연결 실패",
-        "en": "[SV] ask session connection failed",
+        "ko": "[TC] ask 세션 연결 실패",
+        "en": "[TC] ask session connection failed",
     },
     "ask_processing": {
-        "ko": "[SV] 질문 중...",
-        "en": "[SV] Processing question...",
+        "ko": "[TC] 질문 중...",
+        "en": "[TC] Processing question...",
     },
     "ask_response": {
-        "ko": "[SV] Claude:\n{answer}",
-        "en": "[SV] Claude:\n{answer}",
+        "ko": "[TC] Claude:\n{answer}",
+        "en": "[TC] Claude:\n{answer}",
     },
     "ask_error": {
-        "ko": "[SV] ask 오류: {error}",
-        "en": "[SV] ask error: {error}",
+        "ko": "[TC] ask 오류: {error}",
+        "en": "[TC] ask error: {error}",
     },
     "ask_usage": {
-        "ko": "[SV] 사용법: /ask <질문>",
-        "en": "[SV] Usage: /ask <question>",
+        "ko": "[TC] 사용법: /ask <질문>",
+        "en": "[TC] Usage: /ask <question>",
     },
 
     # --- /status ---
     "status_header": {
-        "ko": "[SV] 가동 {h}시간 {m}분",
-        "en": "[SV] Uptime {h}h {m}m",
+        "ko": "[TC] 가동 {h}시간 {m}분",
+        "en": "[TC] Uptime {h}h {m}m",
     },
 
     # --- /usage ---
     "usage_header": {
-        "ko": "[SV] Claude 사용량",
-        "en": "[SV] Claude Usage",
+        "ko": "[TC] Claude 사용량",
+        "en": "[TC] Claude Usage",
     },
     "usage_fail_cred": {
-        "ko": "[SV] 사용량 조회 실패: credentials 읽기 에러 ({error})",
-        "en": "[SV] Usage query failed: credentials error ({error})",
+        "ko": "[TC] 사용량 조회 실패: credentials 읽기 에러 ({error})",
+        "en": "[TC] Usage query failed: credentials error ({error})",
     },
     "usage_fail_http": {
-        "ko": "[SV] 사용량 조회 실패: HTTP {code}",
-        "en": "[SV] Usage query failed: HTTP {code}",
+        "ko": "[TC] 사용량 조회 실패: HTTP {code}",
+        "en": "[TC] Usage query failed: HTTP {code}",
     },
     "usage_fail": {
-        "ko": "[SV] 사용량 조회 실패: {error}",
-        "en": "[SV] Usage query failed: {error}",
+        "ko": "[TC] 사용량 조회 실패: {error}",
+        "en": "[TC] Usage query failed: {error}",
     },
 
     # --- /ctx ---
     "ctx_header": {
-        "ko": "[SV] 컨텍스트 사용량 (추정)",
-        "en": "[SV] Context usage (estimated)",
+        "ko": "[TC] 컨텍스트 사용량 (추정)",
+        "en": "[TC] Context usage (estimated)",
     },
     "ctx_no_data": {
         "ko": "  {name}: 데이터 없음",
@@ -210,8 +210,8 @@ _MESSAGES = {
 
     # --- /sys ---
     "sys_header": {
-        "ko": "[SV] 시스템 상태",
-        "en": "[SV] System Status",
+        "ko": "[TC] 시스템 상태",
+        "en": "[TC] System Status",
     },
     "sys_cpu": {
         "ko": "\U0001f5a5 CPU: {pct}% ({cores}코어)",
@@ -233,7 +233,7 @@ _MESSAGES = {
         "ko": "  Claude 관련 프로세스 없음",
         "en": "  No Claude-related processes",
     },
-    "sys_supervisor": {
+    "sys_teleclaw": {
         "ko": "\n\U0001f916 TeleClaw: PID:{pid} {mem:.0f}MB",
         "en": "\n\U0001f916 TeleClaw: PID:{pid} {mem:.0f}MB",
     },
@@ -244,18 +244,18 @@ _MESSAGES = {
 
     # --- /log ---
     "log_header": {
-        "ko": "[SV] 최근 로그 ({n}줄)\n",
-        "en": "[SV] Recent logs ({n} lines)\n",
+        "ko": "[TC] 최근 로그 ({n}줄)\n",
+        "en": "[TC] Recent logs ({n} lines)\n",
     },
     "log_read_fail": {
-        "ko": "[SV] 로그 읽기 실패: {error}",
-        "en": "[SV] Log read failed: {error}",
+        "ko": "[TC] 로그 읽기 실패: {error}",
+        "en": "[TC] Log read failed: {error}",
     },
 
     # --- /help ---
     "help_text": {
         "ko": (
-            "[SV] 명령어\n\n"
+            "[TC] 명령어\n\n"
             "\U0001f4ca 상태\n"
             "  /status (/s) \u2014 세션 상태\n"
             "  /usage  (/u) \u2014 사용량\n"
@@ -273,7 +273,7 @@ _MESSAGES = {
             "세션: {names}"
         ),
         "en": (
-            "[SV] Commands\n\n"
+            "[TC] Commands\n\n"
             "\U0001f4ca Status\n"
             "  /status (/s) \u2014 session status\n"
             "  /usage  (/u) \u2014 usage\n"
@@ -294,16 +294,16 @@ _MESSAGES = {
 
     # --- 공통 ---
     "shutdown_not_allowed": {
-        "ko": "[SV] TeleClaw 종료는 채팅방에서 불가합니다.",
-        "en": "[SV] Cannot shutdown TeleClaw from chat.",
+        "ko": "[TC] TeleClaw 종료는 채팅방에서 불가합니다.",
+        "en": "[TC] Cannot shutdown TeleClaw from chat.",
     },
     "error_generic": {
         "ko": "오류: {error}",
         "en": "Error: {error}",
     },
     "unauthorized": {
-        "ko": "[SV] 권한 없는 사용자입니다.",
-        "en": "[SV] Unauthorized user.",
+        "ko": "[TC] 권한 없는 사용자입니다.",
+        "en": "[TC] Unauthorized user.",
     },
 
     # --- wrapper ---
@@ -382,102 +382,102 @@ _MESSAGES = {
         "en": "Wrapper is already running.",
     },
 
-    # --- svctl ---
-    "svctl_specify_session": {
+    # --- tcctl ---
+    "tcctl_specify_session": {
         "ko": "세션 이름을 지정하세요: {names}",
         "en": "Specify a session name: {names}",
     },
-    "svctl_session_not_found": {
+    "tcctl_session_not_found": {
         "ko": "세션 '{name}' 없음. 가능: {available}",
         "en": "Session '{name}' not found. Available: {available}",
     },
-    "svctl_need_psutil": {
+    "tcctl_need_psutil": {
         "ko": "psutil이 필요합니다: pip install psutil",
         "en": "psutil required: pip install psutil",
     },
-    "svctl_sv_running": {
+    "tcctl_sv_running": {
         "ko": "TeleClaw PID={pid} 가동: {h}시간 {m}분",
         "en": "TeleClaw PID={pid} uptime: {h}h {m}m",
     },
-    "svctl_sv_not_running": {
+    "tcctl_sv_not_running": {
         "ko": "TeleClaw 미실행",
         "en": "TeleClaw not running",
     },
-    "svctl_total": {
+    "tcctl_total": {
         "ko": "  합계: {mem}MB",
         "en": "  Total: {mem}MB",
     },
-    "svctl_restart_sv": {
+    "tcctl_restart_sv": {
         "ko": "TeleClaw 재시작 요청됨",
         "en": "TeleClaw restart requested",
     },
-    "svctl_restart_session": {
+    "tcctl_restart_session": {
         "ko": "{name} 재시작 요청됨{mode}",
         "en": "{name} restart requested{mode}",
     },
-    "svctl_specify_session_no_sv": {
+    "tcctl_specify_session_no_sv": {
         "ko": "세션 이름을 지정하세요 (teleclaw 불가)",
         "en": "Specify a session name (not teleclaw)",
     },
-    "svctl_paused": {
+    "tcctl_paused": {
         "ko": "{name} 일시정지됨 (PID={pid} 종료)",
         "en": "{name} paused (PID={pid} killed)",
     },
-    "svctl_pause_flag_only": {
+    "tcctl_pause_flag_only": {
         "ko": "{name} 일시정지 플래그 생성됨 (프로세스 종료 실패)",
         "en": "{name} pause flag created (process kill failed)",
     },
-    "svctl_paused_no_proc": {
+    "tcctl_paused_no_proc": {
         "ko": "{name} 일시정지됨 (프로세스 없음)",
         "en": "{name} paused (no process)",
     },
-    "svctl_no_log": {
+    "tcctl_no_log": {
         "ko": "로그 파일 없음",
         "en": "No log file",
     },
-    "svctl_cred_fail": {
+    "tcctl_cred_fail": {
         "ko": "credentials 읽기 실패: {error}",
         "en": "Failed to read credentials: {error}",
     },
-    "svctl_usage_fail_http": {
+    "tcctl_usage_fail_http": {
         "ko": "사용량 조회 실패: HTTP {code}",
         "en": "Usage query failed: HTTP {code}",
     },
-    "svctl_usage_fail": {
+    "tcctl_usage_fail": {
         "ko": "사용량 조회 실패: {error}",
         "en": "Usage query failed: {error}",
     },
-    "svctl_no_session_ids": {
+    "tcctl_no_session_ids": {
         "ko": "session_ids.json 없음",
         "en": "session_ids.json not found",
     },
-    "svctl_no_session": {
+    "tcctl_no_session": {
         "ko": "  {name}: 세션 없음",
         "en": "  {name}: no session",
     },
-    "svctl_no_mapping": {
+    "tcctl_no_mapping": {
         "ko": "  {name}: 매핑 없음",
         "en": "  {name}: no mapping",
     },
-    "svctl_no_transcript": {
+    "tcctl_no_transcript": {
         "ko": "  {name}: transcript 없음",
         "en": "  {name}: no transcript",
     },
-    "svctl_no_usage": {
+    "tcctl_no_usage": {
         "ko": "  {name}: usage 데이터 없음",
         "en": "  {name}: no usage data",
     },
-    "svctl_error": {
+    "tcctl_error": {
         "ko": "  {name}: 오류 - {error}",
         "en": "  {name}: error - {error}",
     },
-    "svctl_unknown_cmd": {
+    "tcctl_unknown_cmd": {
         "ko": "알 수 없는 명령: {cmd}",
         "en": "Unknown command: {cmd}",
     },
-    "svctl_help": {
+    "tcctl_help": {
         "ko": (
-            "사용법: svctl <명령> [인자]\n\n"
+            "사용법: tcctl <명령> [인자]\n\n"
             "  ps          프로세스 상태\n"
             "  restart     세션/TeleClaw 재시작\n"
             "  pause       세션 일시정지\n"
@@ -487,7 +487,7 @@ _MESSAGES = {
             "  help        이 목록"
         ),
         "en": (
-            "Usage: svctl <command> [args]\n\n"
+            "Usage: tcctl <command> [args]\n\n"
             "  ps          process status\n"
             "  restart     restart session/teleclaw\n"
             "  pause       pause session\n"
@@ -497,7 +497,7 @@ _MESSAGES = {
             "  help        this list"
         ),
     },
-    "svctl_sys_fail": {
+    "tcctl_sys_fail": {
         "ko": "시스템 정보 조회 실패",
         "en": "Failed to query system info",
     },

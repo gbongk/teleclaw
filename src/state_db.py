@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS poll_offsets (
     updated_at REAL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS supervisor_state (
+CREATE TABLE IF NOT EXISTS teleclaw_state (
     key TEXT PRIMARY KEY,
     value TEXT DEFAULT '',
     updated_at REAL DEFAULT 0
@@ -62,6 +62,11 @@ def init(db_path: str = ""):
         db_path = os.path.join(DATA_DIR, "teleClaw.db")
     _DB_PATH = db_path
     conn = _get_conn()
+    # 레거시 테이블명 마이그레이션 (supervisor_state → teleclaw_state)
+    tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+    if "supervisor_state" in tables and "teleclaw_state" not in tables:
+        conn.execute("ALTER TABLE supervisor_state RENAME TO teleclaw_state")
+        conn.commit()
     conn.executescript(_SCHEMA)
     conn.commit()
 
@@ -204,18 +209,18 @@ def get_offset(bot_id: str) -> int:
 def set_state(key: str, value: str):
     conn = _get_conn()
     conn.execute(
-        "INSERT OR REPLACE INTO supervisor_state (key, value, updated_at) VALUES (?, ?, ?)",
+        "INSERT OR REPLACE INTO teleclaw_state (key, value, updated_at) VALUES (?, ?, ?)",
         (key, value, time.time()))
     conn.commit()
 
 
 def get_state(key: str, default: str = "") -> str:
     conn = _get_conn()
-    row = conn.execute("SELECT value FROM supervisor_state WHERE key=?", (key,)).fetchone()
+    row = conn.execute("SELECT value FROM teleclaw_state WHERE key=?", (key,)).fetchone()
     return row["value"] if row else default
 
 
-# --- 하위 호환: flag 파일 API (전환 기간용) ---
+# --- 일시정지 상태 ---
 
 def is_paused(name: str) -> bool:
     """세션이 일시정지 상태인지."""

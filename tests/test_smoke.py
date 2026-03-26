@@ -14,10 +14,10 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-SUPERVISOR_DIR = os.path.dirname(os.path.dirname(__file__))
-LOGS_DIR = os.path.join(SUPERVISOR_DIR, "logs")
-DATA_DIR = os.path.join(SUPERVISOR_DIR, "data")
-STATUS_FILE = os.path.join(LOGS_DIR, "hub_status.json")
+TELECLAW_DIR = os.path.dirname(os.path.dirname(__file__))
+LOGS_DIR = os.path.join(TELECLAW_DIR, "logs")
+DATA_DIR = os.path.join(TELECLAW_DIR, "data")
+STATUS_FILE = os.path.join(LOGS_DIR, "teleclaw_status.json")
 LOG_FILE = os.path.join(LOGS_DIR, "teleclaw.log")
 WRAPPER_LOG = os.path.join(LOGS_DIR, "wrapper.log")
 SESSION_IDS_FILE = os.path.join(LOGS_DIR, "session_ids.json")
@@ -55,19 +55,19 @@ def read_text(path):
 
 
 def read_code():
-    sv_path = os.path.join(SUPERVISOR_DIR, "src", "teleclaw.py")
+    sv_path = os.path.join(TELECLAW_DIR, "src", "teleclaw.py")
     with open(sv_path, "r", encoding="utf-8") as f:
         return f.read()
 
 
 def read_wrapper_code():
-    wp_path = os.path.join(SUPERVISOR_DIR, "src", "teleclaw_daemon.py")
+    wp_path = os.path.join(TELECLAW_DIR, "src", "teleclaw_daemon.py")
     with open(wp_path, "r", encoding="utf-8") as f:
         return f.read()
 
 
 def read_commands_code():
-    cmd_path = os.path.join(SUPERVISOR_DIR, "src", "commands.py")
+    cmd_path = os.path.join(TELECLAW_DIR, "src", "commands.py")
     with open(cmd_path, "r", encoding="utf-8") as f:
         return f.read()
 
@@ -87,7 +87,7 @@ sessions = status["sessions"]
 # #1: 프로세스 상태
 # ==========================================================
 print("\n#1: 프로세스 상태")
-test("hub_status.json 존재", os.path.exists(STATUS_FILE))
+test("teleclaw_status.json 존재", os.path.exists(STATUS_FILE))
 test("PID 기록", status.get("pid", 0) > 0, f"pid={status.get('pid')}")
 # tasklist로 프로세스 확인
 try:
@@ -253,7 +253,7 @@ test("연속 에러 카운트 (error_count)", "state.error_count += 1" in sv_cod
 # #18: 재시도 시 메시지 순서 보존
 # ==========================================================
 print("\n#18: 재시도 시 메시지 순서 보존")
-session_code = read_text(os.path.join(SUPERVISOR_DIR, "src", "session.py"))
+session_code = read_text(os.path.join(TELECLAW_DIR, "src", "session.py"))
 test("FIFO 큐 (asyncio.Queue)", "asyncio.Queue" in session_code)
 test("재시도 시 put으로 큐 뒤에 추가", "message_queue.put(msg_data)" in sv_code)
 
@@ -396,8 +396,8 @@ else:
 # #51: auto-resume ON/OFF 제어
 # ==========================================================
 print("\n#51: auto-resume ON/OFF 제어")
-cfg_code = read_text(os.path.join(SUPERVISOR_DIR, "src", "config.py"))
-cmd_code = read_text(os.path.join(SUPERVISOR_DIR, "src", "commands.py"))
+cfg_code = read_text(os.path.join(TELECLAW_DIR, "src", "config.py"))
+cmd_code = read_text(os.path.join(TELECLAW_DIR, "src", "commands.py"))
 test("전역 설정 AUTO_RESUME_ENABLED", "AUTO_RESUME_ENABLED" in cfg_code)
 test("supervisor에서 import", "AUTO_RESUME_ENABLED" in sv_code)
 test("noresume 파라미터", "no_resume" in sv_code)
@@ -491,7 +491,7 @@ test("텔레그램 경고 전송", "잦은 재시작 감지" in wp_code)
 # #56: 로그 로테이션 (날짜별 보관)
 # ==========================================================
 print("\n#56: 로그 로테이션")
-log_utils = read_text(os.path.join(SUPERVISOR_DIR, "src", "logging_utils.py"))
+log_utils = read_text(os.path.join(TELECLAW_DIR, "src", "logging_utils.py"))
 test("_archive_lines 함수", "_archive_lines" in log_utils)
 test("날짜별 파일명", 'teleclaw_{date_str}.log' in log_utils or "teleclaw_" in log_utils)
 test("잘린 로그 보관", "_archive_lines(lines[:-500])" in log_utils)
@@ -515,7 +515,7 @@ test("json= 파라미터", 'json={"chat_id"' in sv_code or 'json={' in sv_code)
 # #48: _notify_all 비동기화
 # ==========================================================
 print("\n#48: _notify_all 비동기화")
-tg_code = read_text(os.path.join(SUPERVISOR_DIR, "src", "telegram_api.py"))
+tg_code = read_text(os.path.join(TELECLAW_DIR, "src", "telegram_api.py"))
 test("async_notify_all 함수 존재", "async def async_notify_all" in tg_code)
 test("async_notify_all import", "async_notify_all" in sv_code)
 test("루프 내 비동기 호출", "await async_notify_all" in sv_code)

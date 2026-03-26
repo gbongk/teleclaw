@@ -20,9 +20,9 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-SUPERVISOR_DIR = os.path.dirname(__file__)
+TELECLAW_DIR = os.path.dirname(os.path.dirname(__file__))  # D:/workspace/supervisor/
 PYTHON = sys.executable
-LOGS_DIR = os.path.join(os.path.dirname(__file__), "logs")
+LOGS_DIR = os.path.join(TELECLAW_DIR, "logs")
 LOG_FILE = os.path.join(LOGS_DIR, "wrapper.log")
 SV_LOG_FILE = os.path.join(LOGS_DIR, "teleclaw.log")
 LOCK_FILE = os.path.join(LOGS_DIR, "wrapper.lock")
@@ -260,7 +260,7 @@ def main():
         with open(stderr_file, "w", encoding="utf-8") as sf:
             proc = subprocess.run(
                 [PYTHON, "-m", "src"],
-                cwd=SUPERVISOR_DIR,
+                cwd=TELECLAW_DIR,
                 stderr=sf,
             )
 

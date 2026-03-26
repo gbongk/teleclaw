@@ -35,8 +35,8 @@ def _patched_parse(data):
 _mp.parse_message = _patched_parse
 
 from .config import (
-    PROJECTS, CHAT_ID, ALLOWED_USERS, SUPERVISOR_DIR, LOGS_DIR, LOG_FILE,
-    STATUS_FILE, SESSION_IDS_FILE, DATA_DIR, TELEGRAM_DIR,
+    PROJECTS, CHAT_ID, ALLOWED_USERS, TELECLAW_DIR, LOGS_DIR, LOG_FILE,
+    STATUS_FILE, SESSION_IDS_FILE, DATA_DIR,
     HEALTH_CHECK_INTERVAL, STUCK_THRESHOLD,
     MAX_RESTARTS_PER_WINDOW, RESTART_WINDOW,
     AUTO_RESUME_ENABLED, AUTO_RESUME_MODE, AUTO_RESUME_PROMPTS,
@@ -99,7 +99,7 @@ class TeleClaw:
 
         # 세션 병렬 연결 (다운타임 최소화, pause 세션 제외)
         async def _connect_and_init(state):
-            if db.is_paused(state.name) or Path(TELEGRAM_DIR).joinpath(f"pause_{state.name}.flag").exists():
+            if db.is_paused(state.name):
                 log(f"{state.name}: PAUSED — 연결 스킵")
                 return
             await self._connect_session(state)
@@ -217,7 +217,7 @@ class TeleClaw:
         try:
             options = ClaudeCodeOptions(
                 permission_mode="bypassPermissions",
-                cwd=SUPERVISOR_DIR,
+                cwd=TELECLAW_DIR,
                 max_turns=5,
             )
             self._ask_client = ClaudeSDKClient(options)
@@ -359,21 +359,15 @@ class TeleClaw:
             try:
                 await asyncio.sleep(1)
 
-                # teleclaw 자체 재시작 체크 (DB + flag 듀얼)
+                # teleclaw 자체 재시작 체크 (DB)
                 sv_cmd = db.pop_command("teleclaw")
-                sv_flag = Path(TELEGRAM_DIR) / "restart_request_teleclaw.flag"
-                if sv_cmd or sv_flag.exists():
+                if sv_cmd:
                     mode = "resume"
                     force = False
-                    try:
-                        content = sv_flag.read_text(encoding="utf-8").strip()
-                        if content == "force":
-                            force = True
-                        elif content in ("resume", "reset"):
-                            mode = content
-                    except Exception:
-                        pass
-                    sv_flag.unlink(missing_ok=True)
+                    args = sv_cmd.get("args", "")
+                    for t in [x.strip() for x in args.split(",") if x.strip()]:
+                        if t == "force": force = True
+                        elif t in ("resume", "reset"): mode = t
                     cooldown = 300  # 5분
                     elapsed = time.time() - self._start_time
                     if not force and elapsed < cooldown:
@@ -400,50 +394,29 @@ class TeleClaw:
                         os._exit(0)  # wrapper가 자동 재시작
 
                 for name, state in self.sessions.items():
-                    # 1) DB 명령 큐 체크
                     cmd = db.pop_command(name)
-                    # 2) flag 파일 체크 (하위 호환)
-                    flag_path = Path(TELEGRAM_DIR) / f"restart_request_{name}.flag"
-                    if not cmd and not flag_path.exists():
+                    if not cmd:
                         continue
                     mode = "resume"
                     force = False
                     no_resume = False
-                    if cmd:
-                        # DB 명령에서 파싱
-                        command = cmd.get("command", "")
-                        if command == "pause":
-                            db.set_paused(name, True)
-                            log(f"{name}: pause 명령 (DB)")
-                            continue
-                        if command == "wakeup":
-                            db.set_paused(name, False)
-                            log(f"{name}: wakeup 명령 (DB)")
-                            continue
-                        args = cmd.get("args", "")
-                        tokens = [t.strip() for t in args.split(",") if t.strip()]
-                        for t in tokens:
-                            if t == "force": force = True
-                            elif t == "noresume": no_resume = True
-                            elif t in ("new", "resume", "reset"): mode = t
-                        log(f"{name}: {command} 명령 (DB, mode={mode})")
-                    elif flag_path.exists():
-                        # flag 파일에서 파싱 (하위 호환)
-                        try:
-                            content = flag_path.read_text(encoding="utf-8").strip()
-                            tokens = [t.strip() for t in content.split(",")]
-                            for t in tokens:
-                                if t == "force": force = True
-                                elif t == "noresume": no_resume = True
-                                elif t in ("new", "resume", "reset"): mode = t
-                        except Exception:
-                            pass
-                        flag_path.unlink(missing_ok=True)
-                        log(f"{name}: restart_request flag 감지 (mode={mode})")
+                    command = cmd.get("command", "")
+                    if command == "pause":
+                        db.set_paused(name, True)
+                        log(f"{name}: pause 명령 (DB)")
+                        continue
+                    if command == "wakeup":
+                        db.set_paused(name, False)
+                        log(f"{name}: wakeup 명령 (DB)")
+                        continue
+                    args = cmd.get("args", "")
+                    tokens = [t.strip() for t in args.split(",") if t.strip()]
+                    for t in tokens:
+                        if t == "force": force = True
+                        elif t == "noresume": no_resume = True
+                        elif t in ("new", "resume", "reset"): mode = t
+                    log(f"{name}: {command} 명령 (DB, mode={mode})")
                     # restart 요청 시 pause 자동 해제
-                    pause_flag = Path(TELEGRAM_DIR) / f"pause_{name}.flag"
-                    if pause_flag.exists():
-                        pause_flag.unlink(missing_ok=True)
                     db.set_paused(name, False)
                     state.no_resume_before_restart = False
                     log(f"{name}: restart 실행 (mode={mode}, force={force}, noresume={no_resume})")
@@ -479,7 +452,7 @@ class TeleClaw:
                 for name, state in self.sessions.items():
                     if self._shutdown:
                         return
-                    if db.is_paused(name) or Path(TELEGRAM_DIR).joinpath(f"pause_{name}.flag").exists():
+                    if db.is_paused(name):
                         continue
                     status = self._assess_health(state)
                     if status == "DEAD":
@@ -1255,12 +1228,9 @@ class TeleClaw:
                         self._last_msg_map = {k: v for k, v in self._last_msg_map.items() if v > cutoff}
 
                     # pause 상태: restart/reset 명령은 통과, 나머지 거부
-                    _is_paused = db.is_paused(name) or Path(TELEGRAM_DIR).joinpath(f"pause_{name}.flag").exists()
-                    if _is_paused:
+                    if db.is_paused(name):
                         text_lower = text.strip().lower()
                         if text_lower in ("restart", "reset", "재시작", "리셋", "/restart", "/reset"):
-                            # pause 해제 + restart 명령 (DB + flag 양쪽)
-                            Path(TELEGRAM_DIR).joinpath(f"pause_{name}.flag").unlink(missing_ok=True)
                             db.set_paused(name, False)
                             mode = "reset" if "reset" in text_lower or "리셋" in text_lower else "resume"
                             db.push_command(name, "restart", f"force,{mode}" if mode != "resume" else "force")
