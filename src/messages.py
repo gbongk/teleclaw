@@ -10,32 +10,32 @@ from .config import LANG
 _MESSAGES = {
     # --- TeleClaw 상태 ---
     "sv_start": {
-        "ko": "[HUB] TeleClaw 시작",
-        "en": "[HUB] TeleClaw starting",
+        "ko": "[TC] TeleClaw 시작",
+        "en": "[TC] TeleClaw starting",
     },
     "sv_ready": {
         "ko": "[TC] 시작 완료 — 메시지 수신 준비됨",
         "en": "[TC] Ready — waiting for messages",
     },
     "sv_init_done": {
-        "ko": "[HUB] 초기화 완료 ({elapsed}초) — {names} 연결됨",
-        "en": "[HUB] Init done ({elapsed}s) — {names} connected",
+        "ko": "[TC] 초기화 완료 ({elapsed}초) — {names} 연결됨",
+        "en": "[TC] Init done ({elapsed}s) — {names} connected",
     },
     "sv_task_error": {
-        "ko": "[HUB] task[{i}] 에러: {error}",
-        "en": "[HUB] task[{i}] error: {error}",
+        "ko": "[TC] task[{i}] 에러: {error}",
+        "en": "[TC] task[{i}] error: {error}",
     },
     "sv_connected": {
         "ko": "[TC] {name}: 연결 완료",
         "en": "[TC] {name}: connected",
     },
     "sv_shutting_down": {
-        "ko": "[HUB] TeleClaw 종료 중...",
-        "en": "[HUB] TeleClaw shutting down...",
+        "ko": "[TC] TeleClaw 종료 중...",
+        "en": "[TC] TeleClaw shutting down...",
     },
     "sv_self_restart": {
-        "ko": "[HUB] 자체 재시작 요청 (mode={mode})",
-        "en": "[HUB] Self-restart requested (mode={mode})",
+        "ko": "[TC] 자체 재시작 요청 (mode={mode})",
+        "en": "[TC] Self-restart requested (mode={mode})",
     },
 
     # --- 세션 재시작 ---

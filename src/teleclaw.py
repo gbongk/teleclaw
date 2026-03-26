@@ -40,6 +40,7 @@ from .config import (
     HEALTH_CHECK_INTERVAL, STUCK_THRESHOLD,
     MAX_RESTARTS_PER_WINDOW, RESTART_WINDOW,
     AUTO_RESUME_ENABLED, AUTO_RESUME_MODE, AUTO_RESUME_PROMPTS,
+    ICON_THINKING, ICON_DONE,
 )
 from .logging_utils import log, _find_existing_teleclaw, _write_lock, _release_lock
 from .channel_telegram import TelegramChannel
@@ -1073,7 +1074,7 @@ class TeleClaw:
                 log(f"{state.name}: 처리 완료")
 
                 # 처리 완료 알림 (새 메시지, 알림 옴)
-                asyncio.create_task(ch.send("✓"))
+                asyncio.create_task(ch.send(ICON_DONE))
 
                 # 처리 완료 후 offset 확정 (재시작 시 미처리 메시지 재수신 보장)
                 processed_update_id = msg_data.get("update_id", 0)
@@ -1244,7 +1245,7 @@ class TeleClaw:
                         continue
 
                     # 수신 확인
-                    await ch.send("💭...")
+                    await ch.send(ICON_THINKING)
 
                     # update_id 추적 (channel.poll이 offset 자동 관리하므로 현재 offset - 1)
                     update_id = ch.get_offset() - 1
