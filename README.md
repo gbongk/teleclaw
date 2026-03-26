@@ -225,7 +225,7 @@ teleclaw/
 +-- src/                       # Main package
 |   +-- teleclaw.py            # TeleClaw class (core)
 |   +-- wrapper.py             # Auto-restart wrapper
-|   +-- tcctl.py               # CLI management tool
+|   +-- teleclaw_ctl.py               # CLI management tool
 |   +-- telegram_helper.py     # CLI: send text/photo/file to Telegram
 |   +-- telegram_api.py        # Telegram API (sync/async, text/photo/file)
 |   +-- channel.py             # Abstract channel interface
