@@ -8,17 +8,6 @@
 
 Keep Claude Code working on your projects while you're away from your desk — monitor progress, send instructions, and manage multiple sessions from your phone.
 
-## How is this different?
-
-| | [claude-code-telegram](https://github.com/RichardAtCT/claude-code-telegram) | [NanoClaw](https://github.com/qwibitai/nanoclaw) | **TeleClaw** |
-|---|---|---|---|
-| **Session model** | New query each message | New agent per chat | **Persistent sessions** (context preserved) |
-| **Multi-project** | Single directory | Groups | **N projects, each with its own bot** |
-| **Auto-recovery** | None | Container restart | **Health check + watchdog + exponential backoff** |
-| **Live streaming** | Tool/reasoning indicators | None | **Real-time response via editMessage** |
-
-Think of it like texting a developer who already knows your codebase — not hiring a new one each time.
-
 ## Features
 
 - **Telegram remote control** — Send messages to Claude Code, see live-streamed responses
