@@ -82,7 +82,7 @@ _re_blank_lines = re.compile(r"\n{3,}")
 _re_control_chars = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 def _clean_text(text: str) -> str:
-    """제어 문자 제거 + 연속 빈 줄 정리 + 깨진 문자 치환"""
+    """제어 문자 제거 + 연속 빈 줄 정리 + 깨진 문자 치환 + URL 제거"""
     text = _re_control_chars.sub("", text)
     # cp949 깨진 문자 복구 시도
     try:
@@ -92,6 +92,9 @@ def _clean_text(text: str) -> str:
         text = text.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
     # U+FFFD (replacement char) 및 연속 깨진 문자 제거
     text = re.sub(r"\ufffd+", "?", text)
+    # URL 제거 — 마크다운 링크 텍스트만 유지, bare URL 제거
+    text = re.sub(r"\[([^\]]+)\]\((https?://[^\)]+)\)", r"\1", text)
+    text = re.sub(r"https?://\S+", "", text)
     text = _re_blank_lines.sub("\n\n", text)
     return text.strip()
 
@@ -134,12 +137,15 @@ def _md_to_telegram_html(text: str) -> str:
         # 테이블 변환 (HTML 이스케이프 전에 처리)
         text = _convert_table_to_list(text)
 
-        # 코드블록 보호
+        # 코드블록 보호 (언어명 + 개행 / 언어명 없이 / 한줄 코드블록)
         code_blocks = []
         def _save_code(m):
             code_blocks.append(m.group(1))
             return f"__CODEBLOCK_{len(code_blocks) - 1}__"
-        text = re.sub(r"```[\w]*\n(.*?)```", _save_code, text, flags=re.DOTALL)
+        # 언어명 뒤 개행이 있는 경우 먼저 매치
+        text = re.sub(r"```\w*\n(.*?)```", _save_code, text, flags=re.DOTALL)
+        # 남은 코드블록 (한줄, 언어명 없음)
+        text = re.sub(r"```(.*?)```", _save_code, text, flags=re.DOTALL)
 
         # 인라인 코드 보호
         inline_codes = []
@@ -151,15 +157,52 @@ def _md_to_telegram_html(text: str) -> str:
         # HTML 이스케이프 (코드블록/인라인 보호 후)
         text = _escape_html(text)
 
-        # 볼드
-        text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
-        # 이탤릭
-        text = re.sub(r"\*(.+?)\*", r"<i>\1</i>", text)
+        # 볼드+이탤릭 (***text***)
+        text = re.sub(r"\*\*\*(?=\S)(.+?)(?<=\S)\*\*\*", r"<b><i>\1</i></b>", text)
+        # 볼드 (**text**)
+        text = re.sub(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", r"<b>\1</b>", text)
+        # 이탤릭 (*text*) — 볼드 처리 후 남은 단독 *만
+        text = re.sub(r"(?<!\*)\*(?=\S)([^*]+?)(?<=\S)\*(?!\*)", r"<i>\1</i>", text)
+        # 취소선
+        text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text)
         # 헤더 → 볼드
         text = re.sub(r"^#{1,3}\s+(.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
 
+        # 인용 → <blockquote> (텔레그램 공식 지원)
+        # 연속 인용줄을 하나의 blockquote로 묶기
+        def _merge_blockquotes(text):
+            lines = text.split("\n")
+            result = []
+            in_quote = False
+            for line in lines:
+                is_quote = line.startswith("&gt;")
+                if is_quote:
+                    content = re.sub(r"^&gt;\s?", "", line)
+                    if not in_quote:
+                        result.append(f"<blockquote>{content}")
+                        in_quote = True
+                    else:
+                        result.append(content)
+                else:
+                    if in_quote:
+                        result[-1] += "</blockquote>"
+                        in_quote = False
+                    result.append(line)
+            if in_quote:
+                result[-1] += "</blockquote>"
+            return "\n".join(result)
+        text = _merge_blockquotes(text)
+
+        # 링크 [text](url) → text만 남기기 (텔레그램에서 URL 미리보기 방지)
+        text = re.sub(r"\[([^\]]+)\]\((https?://[^\)]+)\)", r"\1", text)
+        # 나머지 bare URL 제거 (코드블록 밖)
+        text = re.sub(r"https?://\S+", "", text)
+
         # 도구 라인 → <code> 태그 (구분감 부여)
         text = re.sub(r"^(\u2500 \U0001f527 .+)$", r"<code>\1</code>", text, flags=re.MULTILINE)
+
+        # 연속 빈 줄 정리 (3줄+ → 2줄)
+        text = re.sub(r"\n{3,}", "\n\n", text)
 
         # 인라인 코드 복원
         for i, code in enumerate(inline_codes):
@@ -170,7 +213,8 @@ def _md_to_telegram_html(text: str) -> str:
             text = text.replace(f"__CODEBLOCK_{i}__", f"<pre>{_escape_html(code)}</pre>")
 
         return text
-    except Exception:
+    except Exception as e:
+        log(f"HTML 변환 실패: {e}")
         return _escape_html(text)
 
 
@@ -279,6 +323,20 @@ async def async_react(ahttp: httpx.AsyncClient, bot_token: str, msg_id: int, emo
 
 
 def _notify_all(text: str):
-    """전체 알림 — 모든 봇 채팅방에 전송"""
-    for proj in PROJECTS.values():
-        send_telegram(text, proj["bot_token"])
+    """전체 알림 — 모든 봇에 broadcast (동기)"""
+    sent = set()
+    for name, config in PROJECTS.items():
+        token = config.get("bot_token", "")
+        if token and token not in sent:
+            send_telegram(text, token)
+            sent.add(token)
+
+
+async def async_notify_all(ahttp, text: str):
+    """전체 알림 — 모든 봇에 broadcast (비동기, asyncio 루프 blocking 방지)"""
+    sent = set()
+    for name, config in PROJECTS.items():
+        token = config.get("bot_token", "")
+        if token and token not in sent:
+            await async_send_telegram(ahttp, text, token)
+            sent.add(token)

@@ -2,71 +2,50 @@
 """PostToolUse hook: 도구 사용 + Claude 중간 텍스트를 텔레그램으로 중계."""
 import json
 import os
+import re
 import sys
 
-import urllib.request
+_SUPERVISOR_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _SUPERVISOR_DIR)
+from relay_common import get_config, is_relay_enabled, is_supervised_session, send_telegram
 
-STATE_DIR = "D:/workspace/mcp/telegram"
 
-def get_config():
-    mcp_file = os.path.join(os.getcwd(), ".mcp.json")
-    if not os.path.exists(mcp_file):
-        return None
-    with open(mcp_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    for name, srv in data.get("mcpServers", {}).items():
-        env = srv.get("env", {})
-        token = env.get("TELEGRAM_BOT_TOKEN")
-        chat_id = env.get("TELEGRAM_CHAT_ID")
-        if token and chat_id:
-            bot_name = env.get("TELEGRAM_BOT_NAME", "Claude")
-            return token, chat_id, bot_name
-    return None
+def send_telegram_photo(bot_token, chat_id, photo_path, caption=""):
+    """텔레그램으로 이미지 전송 (multipart/form-data)."""
+    import mimetypes
+    boundary = "----RelayBoundary"
+    body = b""
+    # chat_id
+    body += f"--{boundary}\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n{chat_id}\r\n".encode()
+    # caption
+    if caption:
+        body += f"--{boundary}\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n{caption}\r\n".encode()
+    # photo file
+    mime = mimetypes.guess_type(photo_path)[0] or "image/jpeg"
+    filename = os.path.basename(photo_path)
+    body += f"--{boundary}\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"{filename}\"\r\nContent-Type: {mime}\r\n\r\n".encode()
+    with open(photo_path, "rb") as f:
+        body += f.read()
+    body += f"\r\n--{boundary}--\r\n".encode()
 
-def is_relay_enabled(bot_id, chat_id):
-    return os.path.exists(f"{STATE_DIR}/relay_enabled_{bot_id}_{chat_id}.flag")
-
-def is_supervised_session(session_id):
-    if not session_id:
-        return False
-    status_file = "D:/workspace/mcp/logs/supervisor_status.json"
-    if not os.path.exists(status_file):
-        return True
+    url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+    req = urllib.request.Request(url, data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
     try:
-        with open(status_file, "r", encoding="utf-8") as f:
-            sup = json.load(f)
-        sessions_dir = "C:/Users/kok34/.claude/sessions"
-        my_pid = None
-        for sf_name in os.listdir(sessions_dir):
-            try:
-                with open(os.path.join(sessions_dir, sf_name), "r") as sf:
-                    sd = json.load(sf)
-                if sd.get("sessionId") == session_id:
-                    my_pid = sd.get("pid")
-                    break
-            except Exception:
-                continue
-        if not my_pid:
-            return False
-        for sess in sup.get("sessions", {}).values():
-            if sess.get("pid") == my_pid:
-                return True
-        return False
-    except Exception:
-        return True
-
-def send_telegram(bot_token, chat_id, text):
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = json.dumps({
-        "chat_id": chat_id, "text": text, "disable_web_page_preview": True,
-    }).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-    try:
-        urllib.request.urlopen(req, timeout=5)
-    except Exception:
-        pass
+        urllib.request.urlopen(req, timeout=15)
+    except Exception as e:
+        print(f"[relay-tool-use] 사진 전송 실패: {e}", file=sys.stderr, flush=True)
 
 def summarize(tool_name, tool_input):
+    """도구 사용을 한 줄로 요약하여 텔레그램 중계용 텍스트를 생성한다.
+
+    Args:
+        tool_name: Claude 도구명 (예: "Read", "Bash", "mcp__ai-chat__ask_ai")
+        tool_input: 도구 입력 파라미터 dict (또는 비-dict 값)
+
+    Returns:
+        80자 이내 요약 문자열 (ai-chat 도구는 300자)
+    """
     if isinstance(tool_input, dict):
         get = tool_input.get
     else:
@@ -174,6 +153,56 @@ def get_last_assistant_text(transcript_path):
     except Exception:
         return None
 
+def filter_assistant_text(text):
+    """assistant 텍스트에서 노이즈를 제거하고 압축한다.
+
+    - Shell cwd was reset 라인 제거
+    - 연속된 OK/PASS 라인을 요약으로 압축 (FAIL은 유지)
+    - 내부 도구 표시(─ 🔧) 라인 제거
+    """
+    lines = text.splitlines()
+    filtered = []
+    ok_count = 0
+    fail_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+        # Shell cwd reset 노이즈 제거
+        if stripped.startswith("Shell cwd was reset"):
+            continue
+        # 도구 내부 표시 제거
+        if "─ 🔧" in stripped or "─ \U0001f527" in stripped:
+            continue
+        # 테스트 OK/PASS 라인 압축
+        if re.match(r'^\s*(OK|✓|PASS|✅)\s+', stripped):
+            ok_count += 1
+            continue
+        # FAIL 라인은 유지
+        if re.match(r'^\s*(FAIL|✗|❌)\s+', stripped):
+            fail_lines.append(stripped)
+            continue
+        # OK/FAIL 블록이 끝났으면 요약 삽입
+        if ok_count > 0 or fail_lines:
+            total = ok_count + len(fail_lines)
+            summary = f"{ok_count}/{total} 통과"
+            if fail_lines:
+                summary += ", FAIL: " + "; ".join(fail_lines)
+            filtered.append(summary)
+            ok_count = 0
+            fail_lines = []
+        filtered.append(line)
+
+    # 마지막 OK/FAIL 블록 처리
+    if ok_count > 0 or fail_lines:
+        total = ok_count + len(fail_lines)
+        summary = f"{ok_count}/{total} 통과"
+        if fail_lines:
+            summary += ", FAIL: " + "; ".join(fail_lines)
+        filtered.append(summary)
+
+    return "\n".join(filtered).strip()
+
+
 def load_last_sent(session_id):
     """이전에 전송한 텍스트 로드"""
     path = f"{STATE_DIR}/.relay_lasttxt_{session_id[:8]}"
@@ -220,6 +249,24 @@ def main():
     if not is_supervised_session(session_id):
         return
 
+    # 스크린샷 도구: 이미지를 텔레그램으로 전송
+    if tool_name in ("mcp__emulator-test__screenshot", "mcp__emulator-test__screenshot_raw"):
+        tool_response = data.get("tool_response", "")
+        if isinstance(tool_response, str):
+            try:
+                tool_response = json.loads(tool_response)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        result_text = tool_response.get("result", "") if isinstance(tool_response, dict) else str(tool_response)
+        # "saved: /path/to/file.jpg (123KB)" 에서 경로 추출
+        match = re.search(r"saved:\s*(.+?)\s*\(", result_text)
+        if match:
+            photo_path = match.group(1).strip()
+            if os.path.exists(photo_path):
+                send_telegram_photo(bot_token, chat_id, photo_path,
+                    caption=f"[{bot_name}] 📸 {os.path.basename(photo_path)}")
+                return
+
     # 도구 요약을 생략할 도구들 (텍스트 중계는 함)
     SILENT_TOOLS = {"Read", "Grep", "Glob", "Agent"}
     is_telegram_tool = tool_name.startswith("mcp__telegram")
@@ -236,6 +283,9 @@ def main():
                 prev = load_last_sent(session_id)
                 if assistant_text != prev:
                     save_last_sent(session_id, assistant_text)
+                    assistant_text = filter_assistant_text(assistant_text)
+                    if not assistant_text:
+                        return
                     if len(assistant_text) > 300:
                         assistant_text = assistant_text[:300] + "..."
                     text = f"[{bot_name}] {assistant_text}"
@@ -253,9 +303,11 @@ def main():
                 prev = load_last_sent(session_id)
                 if assistant_text != prev:
                     save_last_sent(session_id, assistant_text)
-                    if len(assistant_text) > 300:
-                        assistant_text = assistant_text[:300] + "..."
-                    messages.append(assistant_text)
+                    assistant_text = filter_assistant_text(assistant_text)
+                    if assistant_text:
+                        if len(assistant_text) > 300:
+                            assistant_text = assistant_text[:300] + "..."
+                        messages.append(assistant_text)
 
         # 2. 도구 요약 (Edit, Write, Bash, MCP만)
         messages.append(summarize(tool_name, data.get("tool_input", {})))
@@ -271,8 +323,8 @@ def main():
             text = text[:4000] + "..."
 
         send_telegram(bot_token, chat_id, text)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[relay-tool-use] main 처리 실패: {e}", file=sys.stderr, flush=True)
 
 if __name__ == "__main__":
     main()

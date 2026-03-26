@@ -1,0 +1,15 @@
+# TeleClaw 설정 파일
+# 이 파일을 config.yaml로 복사한 후 실제 값을 채우세요.
+#   cp config.example.yaml config.yaml
+
+# 텔레그램 채팅 ID (봇과 대화할 사용자)
+chat_id: "YOUR_TELEGRAM_CHAT_ID"
+
+# 프로젝트별 설정
+# 각 프로젝트는 독립된 텔레그램 봇으로 운영됩니다.
+# @BotFather에서 봇을 생성하고 토큰을 입력하세요.
+projects:
+  MyProject:
+    cwd: "/path/to/your/project"          # Claude Code 작업 디렉토리
+    bot_token: "BOT_TOKEN_FROM_BOTFATHER"  # 텔레그램 봇 토큰
+    bot_id: "BOT_ID_NUMBER"               # 봇 토큰의 : 앞부분

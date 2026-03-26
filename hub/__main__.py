@@ -1,4 +1,4 @@
-"""python -m supervisor 지원"""
+"""python -m hub 지원"""
 
 import asyncio
 from .supervisor import main

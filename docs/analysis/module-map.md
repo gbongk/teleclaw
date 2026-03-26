@@ -1,6 +1,6 @@
 # 슈퍼바이저 모듈 맵
 
-## 패키지 `supervisor/supervisor/`
+## 패키지 `supervisor/hub/`
 
 ### config.py
 | 이름 | 타입 | 설명 |
@@ -26,7 +26,8 @@
 | 함수 | 설명 |
 |---|---|
 | `log(msg)` | 타임스탬프 로그 (콘솔 + 파일, 500줄 로테이션) |
-| `_find_existing_supervisor()` → `int\|None` | WMI로 기존 supervisor.py 프로세스 PID 탐지 |
+| `_archive_lines(lines)` | 잘린 로그를 날짜별 파일에 보관. 7일 초과 자동 삭제 |
+| `_find_existing_supervisor()` → `int\|None` | WMI로 기존 supervisor 프로세스 PID 탐지 |
 | `_write_lock()` | PID + 시작시간 lock 파일 생성 |
 | `_release_lock()` | lock 파일 삭제 |
 
@@ -80,18 +81,18 @@
 | `/usage` | `_get_usage()` 호출 |
 | `/sys` | handle_command 내부 (psutil) |
 | `/log` | handle_command 내부 |
-| `/restart` | Supervisor._restart_session 호출 |
-| `/reset` | Supervisor._restart_session(mode="reset") 호출 |
+| `/restart` | pause 해제 + Supervisor._restart_session 호출 |
+| `/reset` | pause 해제 + Supervisor._restart_session(mode="reset") 호출 |
 | `/pause` | flag 파일 생성 |
 | `/wakeup` | flag 파일 삭제 |
 | `/ask` | Supervisor._handle_ask 호출 |
 | `/help` | 텍스트 출력 |
 
-### supervisor.py (패키지 내)
+### hub/supervisor.py
 | 메서드 | 분류 | 설명 |
 |---|---|---|
 | `__init__()` | 초기화 | sessions, http client, watchdog 초기화 |
-| `start()` | 초기화 | 세션 연결, 루프 병렬 시작 |
+| `start()` | 초기화 | 세션 병렬 연결 (asyncio.gather), 루프 시작 |
 | `shutdown()` | 종료 | shutdown 플래그, lock 해제, 연결 종료 |
 | `_connect_session(state, mode)` | 세션 | SDK 클라이언트 연결 (resume/reset) |
 | `_restart_session(state, reason, mode)` | 세션 | 레이트 리밋 검사 후 재연결 |
@@ -99,10 +100,10 @@
 | `_flush_pending_updates(state)` | 세션 | pause→wakeup 시 메시지 flush |
 | `_ensure_ask_client()` | 세션 | /ask 전용 클라이언트 lazy init |
 | `_handle_ask(question, bot_token)` | 세션 | /ask 쿼리 처리 |
-| `_session_loop(state)` | 루프 | 메시지 큐 → SDK query → 스트리밍 응답 전송 |
-| `_bot_poll_loop(state)` | 루프 | 텔레그램 long polling → 큐 적재 |
+| `_session_loop(state)` | 루프 | 메시지 큐 → SDK 버퍼 드레인 → SDK query → 스트리밍 응답 전송. query() 전에 `_message_receive.receive_nowait()`로 잔여 메시지 제거 (N턴 밀림 방지). except 블록에서 `state.restarting=True`면 에러 재시도 스킵 ("재시작 중 에러 무시" 로그) |
+| `_bot_poll_loop(state)` | 루프 | 텔레그램 long polling → 큐 적재, 에러 시 repr+traceback |
 | `_health_check_loop()` | 루프 | 2분 주기 DEAD/STUCK 감지 |
-| `_restart_flag_loop()` | 루프 | 1초 주기 flag 파일 폴링 |
+| `_restart_flag_loop()` | 루프 | 1초 주기 flag 파일 폴링, busy 시 graceful shutdown 대기 |
 | `_watchdog_loop()` | 루프 | asyncio 데드락 감지 |
 | `_start_watchdog_thread()` | 감시 | 워치독 스레드 시작 |
 | `_assess_health(state)` | 감시 | 상태 판정 (OK/DEAD/STUCK/PAUSED) |

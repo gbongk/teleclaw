@@ -24,32 +24,23 @@ from claude_code_sdk import (
     SystemMessage, AssistantMessage, UserMessage, ResultMessage,
 )
 
-# monkey-patch: rate_limit_event 캡처 + 알 수 없는 타입 무시
+# monkey-patch: 알 수 없는 메시지 타입 (rate_limit_event 등) 무시
 import claude_code_sdk._internal.message_parser as _mp
 _original_parse = _mp.parse_message
-_rate_limit_data = {}  # session_id → {status, utilization, resetsAt, ts}
 def _patched_parse(data):
     try:
         return _original_parse(data)
     except Exception:
-        if isinstance(data, dict) and data.get("type") == "rate_limit_event":
-            info = data.get("rate_limit_info", {})
-            sid = data.get("session_id", "")
-            _rate_limit_data[sid] = {
-                "status": info.get("status"),
-                "utilization": info.get("utilization"),
-                "resetsAt": info.get("resetsAt"),
-                "ts": time.time(),
-            }
         return None
 _mp.parse_message = _patched_parse
 
 from .config import (
     PROJECTS, CHAT_ID, SUPERVISOR_DIR, LOGS_DIR, LOG_FILE,
-    STATUS_FILE, SESSION_IDS_FILE, TELEGRAM_DIR,
+    STATUS_FILE, SESSION_IDS_FILE, DATA_DIR, TELEGRAM_DIR,
     HEALTH_CHECK_INTERVAL, STUCK_THRESHOLD,
     MAX_RESTARTS_PER_WINDOW, RESTART_WINDOW,
     SESSION_RESET_QUERIES, SESSION_RESET_HOURS,
+    AUTO_RESUME_ENABLED, AUTO_RESUME_MODE, AUTO_RESUME_PROMPTS,
 )
 from .logging_utils import log, _find_existing_supervisor, _write_lock, _release_lock
 from .telegram_api import (
@@ -57,7 +48,7 @@ from .telegram_api import (
     _clean_text, _escape_html, _convert_table_to_list,
     _md_to_telegram_html, _split_message,
     async_send_telegram, async_edit_telegram, async_react,
-    _notify_all,
+    _notify_all, async_notify_all,
 )
 from .session import SessionState
 from .commands import handle_command, _get_usage
@@ -75,9 +66,11 @@ class Supervisor:
         self._last_msg_map: dict[str, float] = {}  # 중복 메시지 제거용
         self._ask_client: ClaudeSDKClient | None = None
         self._ask_busy = False
+        self._fresh_start = True  # 슈퍼바이저 프로세스 시작 직후 (개별 세션 재시작과 구분)
 
     async def start(self):
         log("슈퍼바이저 시작")
+        _notify_all("[HUB] 슈퍼바이저 시작")
 
         # 세션 초기화
         for name, config in PROJECTS.items():
@@ -97,55 +90,56 @@ class Supervisor:
         tasks.append(asyncio.create_task(self._health_check_loop()))
         tasks.append(asyncio.create_task(self._watchdog_loop()))
 
-        # 세션 순차 연결 (동시 생성 시 프로세스 폭주로 initialize 타임아웃)
-        for name, state in self.sessions.items():
+        # 세션 병렬 연결 (다운타임 최소화, pause 세션 제외)
+        async def _connect_and_init(state):
+            pause_flag = Path(TELEGRAM_DIR) / f"pause_{state.name}.flag"
+            if pause_flag.exists():
+                log(f"{state.name}: PAUSED — 연결 스킵")
+                return
             await self._connect_session(state)
             if state.connected:
-                await asyncio.sleep(10)  # MCP 초기화 안정화 대기
+                await self._wait_mcp_ready(state, timeout=5)
+                send_telegram(f"[SV] 시작 완료 — 메시지 수신 준비됨", state.config["bot_token"], notify=True)
+                log(f"{state.name}: 세션 루프 즉시 시작")
 
-        # 세션 루프 시작 (연결된 세션만 처리, 미연결은 자동 재연결)
+        await asyncio.gather(
+            *[_connect_and_init(s) for s in self.sessions.values()],
+            return_exceptions=True,
+        )
+
+        # 모든 세션 루프 시작 (연결 여부 무관 — 미연결은 자동 재연결)
         for name, state in self.sessions.items():
             tasks.append(asyncio.create_task(self._session_loop(state)))
 
-        # 시작 알림
-        for state in self.sessions.values():
-            send_telegram(f"[SV] 시작 완료 — 메시지 수신 준비됨", state.config["bot_token"], notify=True)
         self._write_status()
 
+        connected = [n for n, s in self.sessions.items() if s.connected]
+        elapsed = int(time.time() - self._start_time)
+        await async_notify_all(self._ahttp, f"[HUB] 초기화 완료 ({elapsed}초) — {', '.join(connected)} 연결됨")
         log("모든 루프 시작됨")
+
+        # 슈퍼바이저 시작 시에는 자동 재개 안 함
+        # (세션이 아직 불안정할 수 있고, was_busy_before_restart도 없음)
+        self._fresh_start = False
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for i, r in enumerate(results):
             if isinstance(r, BaseException):
                 log(f"task[{i}] 에러로 종료: {r}")
+                await async_notify_all(self._ahttp, f"[HUB] task[{i}] 에러: {r}")
 
-    async def _flush_pending_updates(self, state: SessionState):
-        """pause 중 쌓인 메시지를 버리고 offset을 최신으로 맞춤"""
-        bot_token = state.config["bot_token"]
-        bot_id = state.config["bot_id"]
-        try:
-            r = await self._ahttp.get(
-                f"https://api.telegram.org/bot{bot_token}/getUpdates",
-                params={"timeout": 0}, timeout=10,
-            )
-            results = r.json().get("result", [])
-            if results:
-                last_id = max(u["update_id"] for u in results)
-                await self._ahttp.get(
-                    f"https://api.telegram.org/bot{bot_token}/getUpdates",
-                    params={"offset": last_id + 1, "timeout": 0}, timeout=10,
-                )
-                self._update_ids[bot_id] = last_id
-                log(f"{state.name}: wakeup flush — {len(results)}개 메시지 스킵")
-        except Exception as e:
-            log(f"{state.name}: wakeup flush 실패: {e}")
 
     async def _safe_disconnect(self, client, name: str):
-        """disconnect를 타임아웃 포함으로 안전하게 실행 (fire-and-forget용)"""
+        """프로세스를 직접 종료. client.disconnect()는 anyio cancel scope 충돌로 CPU 100% 유발하므로 호출하지 않음."""
         try:
-            await asyncio.wait_for(client.disconnect(), timeout=10)
-            log(f"{name}: disconnect 완료")
-        except BaseException as e:
-            log(f"{name}: disconnect 에러 (무시): {e}")
+            transport = getattr(client, "_transport", None)
+            proc = getattr(transport, "_process", None) if transport else None
+            if proc and proc.returncode is None:
+                proc.terminate()
+                log(f"{name}: 프로세스 terminate (pid={proc.pid})")
+            else:
+                log(f"{name}: 프로세스 이미 종료됨")
+        except Exception as kill_err:
+                log(f"{name}: 프로세스 종료 실패: {kill_err}")
 
     async def _connect_session(self, state: SessionState, mode: str = "resume"):
         try:
@@ -189,6 +183,7 @@ class Supervisor:
             state.error_count = 0
             state.start_time = time.time()
             state.query_count = 0
+            state.last_restart_mode = mode
             log(f"{state.name}: SDK 세션 연결 완료 (mode={mode})")
             send_telegram(f"[SV] {state.name}: 연결 완료", state.config["bot_token"], notify=True)
         except Exception as e:
@@ -200,6 +195,14 @@ class Supervisor:
             log(f"{state.name}: SDK 연결 실패: {e}")
             state.connected = False
             state.error_count += 1
+
+    async def _wait_mcp_ready(self, state: SessionState, timeout: int = 5):
+        """MCP 서버 준비 대기. 최소 3초, 최대 timeout초."""
+        for i in range(timeout):
+            await asyncio.sleep(1)
+            if not state.connected or not state.client:
+                break
+        log(f"{state.name}: MCP 안정화 대기 완료 ({min(timeout, i+1)}초)")
 
     async def _ensure_ask_client(self) -> bool:
         """ask 전용 SDK 클라이언트를 생성/재사용. 성공 시 True."""
@@ -254,21 +257,24 @@ class Supervisor:
         finally:
             self._ask_busy = False
 
-    async def _restart_session(self, state: SessionState, reason: str, mode: str = "resume"):
+    async def _restart_session(self, state: SessionState, reason: str, mode: str = "resume", force: bool = False, no_resume: bool = False):
         if state.restarting:
             log(f"{state.name}: 이미 재시작 진행 중, 스킵 (사유: {reason})")
             return
 
         now = time.time()
         state.restart_history = [ts for ts in state.restart_history if now - ts < RESTART_WINDOW]
-        if len(state.restart_history) >= MAX_RESTARTS_PER_WINDOW:
+        if not force and len(state.restart_history) >= MAX_RESTARTS_PER_WINDOW:
             oldest = min(state.restart_history) if state.restart_history else now
             wait_remaining = int(RESTART_WINDOW - (now - oldest))
             if wait_remaining > 0:
                 msg = f"[WARN] {state.name}: 재시작 한도 초과 ({MAX_RESTARTS_PER_WINDOW}회/{RESTART_WINDOW//60}분)\n사유: {reason}\n{wait_remaining}초 후 자동 재시도"
                 log(msg)
                 if now - state.last_notify_time > 300:
-                    _notify_all(msg)
+                    if self._ahttp:
+                        await async_notify_all(self._ahttp, msg)
+                    else:
+                        _notify_all(msg)
                     state.last_notify_time = now
                 return
 
@@ -277,13 +283,15 @@ class Supervisor:
             log(f"{state.name}: 재시작 시도 (사유: {reason})")
             send_telegram(f"[SV] {state.name}: {reason} → 재시작", state.config["bot_token"])
 
-            # 재시작 전 상태 기록
-            state.was_busy_before_restart = state.busy
+            # 재시작 전 상태 기록 (STUCK은 busy 강제)
+            state.was_busy_before_restart = state.busy or "STUCK" in reason
             state.last_restart_mode = mode
 
-            # client 참조 해제 (disconnect는 별도 태스크에서 불가 — cancel scope 제약)
-            # GC가 프로세스 종료 시 정리
+            # client disconnect 후 참조 해제
+            old_client = state.client
             state.client = None
+            if old_client:
+                asyncio.create_task(self._safe_disconnect(old_client, state.name))
             state.connected = False
             state.busy = False
 
@@ -296,6 +304,24 @@ class Supervisor:
             self._write_status()
             if state.connected:
                 send_telegram(f"[SV] {state.name}: 재시작 완료, 메시지 수신 준비됨", state.config["bot_token"], notify=True)
+
+                # auto-resume: 세션 개별 재시작 시에만
+                # reset(new) 또는 슈퍼바이저 초기 시작 시에는 스킵 (start()에서 check 모드로 처리)
+                if mode != "new" and not self._fresh_start and AUTO_RESUME_ENABLED and not no_resume and state.message_queue.empty():
+                    # 세션 개별 재시작 → 설정된 모드(resume/check) 사용
+                    effective_mode = AUTO_RESUME_MODE
+                    prompt = AUTO_RESUME_PROMPTS.get(effective_mode)
+                    if prompt and self._should_auto_resume(state):
+                        state.resume_count += 1
+                        log(f"{state.name}: 자동 재개 ({state.resume_count}/2, mode={effective_mode}) — AI에게 판단 위임")
+                        await state.message_queue.put({
+                            "text": prompt,
+                            "msg_id": 0,
+                            "auto_resume": True,
+                            "retry_count": 0,
+                        })
+                    elif effective_mode == "none" and self._should_auto_resume(state):
+                        log(f"{state.name}: auto-resume mode=none → 프롬프트 없이 대기")
         finally:
             state.restarting = False
 
@@ -304,57 +330,76 @@ class Supervisor:
             try:
                 await asyncio.sleep(1)
 
-                # supervisor 자체 재시작 flag 체크
+                # supervisor 자체 재시작 flag 체크 (5분 쿨다운)
                 sv_flag = Path(TELEGRAM_DIR) / "restart_request_supervisor.flag"
                 if sv_flag.exists():
                     mode = "resume"
+                    force = False
                     try:
                         content = sv_flag.read_text(encoding="utf-8").strip()
-                        if content in ("resume", "reset"):
+                        if content == "force":
+                            force = True
+                        elif content in ("resume", "reset"):
                             mode = content
                     except Exception:
                         pass
                     sv_flag.unlink(missing_ok=True)
-                    log(f"supervisor 자체 재시작 flag 감지 (mode={mode}) → 프로세스 종료")
-                    _notify_all(f"[SV] 자체 재시작 요청 (mode={mode})")
-                    self._shutdown = True
-                    os._exit(0)  # wrapper가 자동 재시작
+                    cooldown = 300  # 5분
+                    elapsed = time.time() - self._start_time
+                    if not force and elapsed < cooldown:
+                        log(f"supervisor 자체 재시작 flag 무시 (쿨다운: {int(cooldown - elapsed)}초 남음)")
+                    else:
+                        # busy 세션은 no_resume 마킹 (auto-resume 루프 방지)
+                        self._save_session_ids(no_resume_if_busy=True)
+                        # busy 세션이 있으면 완료 대기 (최대 60초)
+                        busy_sessions = [n for n, s in self.sessions.items() if s.busy]
+                        if busy_sessions and not force:
+                            log(f"supervisor 자체 재시작 flag 감지 — busy 세션 대기: {', '.join(busy_sessions)}")
+                            waited = 0
+                            while waited < 60:
+                                await asyncio.sleep(2)
+                                waited += 2
+                                busy_sessions = [n for n, s in self.sessions.items() if s.busy]
+                                if not busy_sessions:
+                                    break
+                            if busy_sessions:
+                                log(f"graceful 대기 60초 초과, 강제 종료 (busy: {', '.join(busy_sessions)})")
+                        log(f"supervisor 자체 재시작 flag 감지 (mode={mode}, force={force}) → 프로세스 종료")
+                        await async_notify_all(self._ahttp, f"[HUB] 자체 재시작 요청 (mode={mode})")
+                        self._shutdown = True
+                        os._exit(0)  # wrapper가 자동 재시작
 
                 for name, state in self.sessions.items():
-                    # pause flag 체크
-                    pause_path = Path(TELEGRAM_DIR) / f"telegram_pause_{name}.flag"
-                    if pause_path.exists() and not state.paused:
-                        # pause 진입 — client 참조만 해제 (disconnect는 GC에 맡김)
-                        log(f"{name}: pause flag 감지 → pause 설정")
-                        state.paused = True
-                        state.connected = False
-                        state.busy = False
-                        state.client = None
-                        send_telegram(f"[SV] {name}: 일시정지됨 (CLI 사용 가능)", state.config["bot_token"])
-                        self._write_status()
-                    elif not pause_path.exists() and state.paused:
-                        # wakeup (flag 삭제됨) — pause 중 쌓인 메시지 flush 후 reconnect
-                        log(f"{name}: pause flag 삭제됨 → SDK reconnect")
-                        state.paused = False
-                        await self._flush_pending_updates(state)
-                        await self._connect_session(state, mode="resume")
-                        send_telegram(f"[SV] {name}: 일시정지 해제, SDK 재연결", state.config["bot_token"])
-                        self._write_status()
-
                     # restart flag 체크
                     flag_path = Path(TELEGRAM_DIR) / f"restart_request_{name}.flag"
                     if not flag_path.exists():
                         continue
                     mode = "resume"
+                    force = False
+                    no_resume = False
                     try:
                         content = flag_path.read_text(encoding="utf-8").strip()
-                        if content in ("new", "resume", "reset"):
-                            mode = content
+                        tokens = [t.strip() for t in content.split(",")]
+                        for t in tokens:
+                            if t == "force":
+                                force = True
+                            elif t == "noresume":
+                                no_resume = True
+                            elif t in ("new", "resume", "reset"):
+                                mode = t
                     except Exception:
                         pass
                     flag_path.unlink(missing_ok=True)
-                    log(f"{name}: restart_request flag 감지 (mode={mode})")
-                    await self._restart_session(state, f"flag 요청 (mode={mode})", mode=mode)
+                    # restart 요청 시 pause 자동 해제
+                    pause_flag = Path(TELEGRAM_DIR) / f"pause_{name}.flag"
+                    if pause_flag.exists():
+                        pause_flag.unlink(missing_ok=True)
+                        log(f"{name}: pause 해제됨 (restart 요청)")
+                    # flag 경유 재시작: 사용자 요청이므로 busy 여부와 무관하게 auto-resume 허용
+                    # no_resume는 flag 파일에 명시적으로 "noresume"이 있을 때만 적용
+                    state.no_resume_before_restart = False  # busy 마킹 초기화
+                    log(f"{name}: restart_request flag 감지 (mode={mode}, force={force}, noresume={no_resume})")
+                    await self._restart_session(state, f"flag 요청 (mode={mode})", mode=mode, force=force, no_resume=no_resume)
             except asyncio.CancelledError:
                 raise
             except BaseException as e:
@@ -362,8 +407,8 @@ class Supervisor:
                 await asyncio.sleep(5)
 
     def _assess_health(self, state: SessionState) -> str:
-        if state.paused:
-            return "PAUSED"
+        if state.restarting:
+            return "OK"
         if not state.connected or state.client is None:
             return "DEAD"
         elapsed = time.time() - state.start_time
@@ -373,6 +418,9 @@ class Supervisor:
             busy_duration = time.time() - state.busy_since
             if busy_duration > STUCK_THRESHOLD:
                 return "STUCK"
+        # 큐에 메시지가 있는데 busy가 아닌 상태가 5분 이상 지속
+        if not state.busy and state.message_queue.qsize() > 0:
+            return "STUCK"
         return "OK"
 
     async def _health_check_loop(self):
@@ -383,10 +431,12 @@ class Supervisor:
                 for name, state in self.sessions.items():
                     if self._shutdown:
                         return
-                    status = self._assess_health(state)
-                    if status == "PAUSED":
+                    # pause 플래그가 있으면 재시작 스킵
+                    pause_flag = Path(TELEGRAM_DIR) / f"pause_{name}.flag"
+                    if pause_flag.exists():
                         continue
-                    elif status == "DEAD":
+                    status = self._assess_health(state)
+                    if status == "DEAD":
                         await self._restart_session(state, "DEAD")
                     elif status == "STUCK":
                         await self._restart_session(state, "STUCK (30분+ busy)")
@@ -397,12 +447,40 @@ class Supervisor:
                 log(f"health_check_loop 에러: {e}")
             await asyncio.sleep(HEALTH_CHECK_INTERVAL)
 
-    def _save_session_ids(self):
-        """session_id를 파일에 저장 (재시작 시 복원용)."""
+    def _save_offset(self, bot_id: str, offset: int):
+        """폴링 offset을 파일에 원자적으로 저장 (write→rename)."""
+        path = os.path.join(DATA_DIR, f"last_offset_{bot_id}.json")
+        tmp_path = path + ".tmp"
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            with open(tmp_path, "w") as f:
+                json.dump({"offset": offset, "ts": time.time()}, f)
+            os.replace(tmp_path, path)
+        except Exception:
+            pass
+
+    def _load_offset(self, bot_id: str) -> int | None:
+        """저장된 offset 복원. 없으면 None."""
+        path = os.path.join(DATA_DIR, f"last_offset_{bot_id}.json")
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            return data.get("offset")
+        except Exception:
+            return None
+
+    def _save_session_ids(self, no_resume_if_busy=False):
+        """session_id + busy 상태를 파일에 저장 (재시작 시 복원용).
+        no_resume_if_busy=True: 슈퍼바이저 자체 재시작 시, busy 세션은 no_resume 마킹."""
         data = {}
         for name, state in self.sessions.items():
+            entry = {}
             if state.session_id:
-                data[name] = state.session_id
+                entry["session_id"] = state.session_id
+            entry["was_busy"] = state.busy
+            if no_resume_if_busy and state.busy:
+                entry["no_resume"] = True
+            data[name] = entry
         try:
             with open(SESSION_IDS_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f)
@@ -410,14 +488,30 @@ class Supervisor:
             pass
 
     def _load_session_ids(self):
-        """저장된 session_id를 복원."""
+        """저장된 session_id + busy 상태를 복원."""
         try:
             with open(SESSION_IDS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            for name, sid in data.items():
-                if name in self.sessions and sid:
-                    self.sessions[name].session_id = sid
-                    log(f"{name}: session_id 복원됨 ({sid[:16]}...)")
+            for name, val in data.items():
+                if name not in self.sessions:
+                    continue
+                state = self.sessions[name]
+                # 하위 호환: 문자열이면 session_id만
+                if isinstance(val, str):
+                    if val:
+                        state.session_id = val
+                        log(f"{name}: session_id 복원됨 ({val[:16]}...)")
+                elif isinstance(val, dict):
+                    sid = val.get("session_id", "")
+                    if sid:
+                        state.session_id = sid
+                        log(f"{name}: session_id 복원됨 ({sid[:16]}...)")
+                    if val.get("was_busy"):
+                        state.was_busy_before_restart = True
+                        log(f"{name}: 재시작 전 busy 상태 복원됨")
+                    if val.get("no_resume"):
+                        state.no_resume_before_restart = True
+                        log(f"{name}: no_resume 마킹 복원됨 (auto-resume 루프 방지)")
         except (FileNotFoundError, json.JSONDecodeError):
             pass
         except Exception as e:
@@ -435,8 +529,7 @@ class Supervisor:
             data["sessions"][name] = {
                 "connected": state.connected,
                 "busy": state.busy,
-                "paused": state.paused,
-                "status": "PAUSED" if state.paused else self._assess_health(state),
+                "status": self._assess_health(state),
                 "session_id": state.session_id[:16] if state.session_id else None,
                 "restart_count": state.restart_count,
                 "query_count": state.query_count,
@@ -532,10 +625,13 @@ class Supervisor:
 
     @staticmethod
     def _format_tool_line(tool_lines: list) -> str:
-        """도구 호출 목록을 컴팩트한 한 줄로 포맷"""
-        # "🔧 Read: a.py", "🔧 Grep: b.py" → "─ 🔧 Read: a.py → Grep: b.py"
+        """도구 호출 목록을 컴팩트한 한 줄로 포맷. 4개 초과 시 축약."""
         names = [t.replace("\U0001f527 ", "") for t in tool_lines]
-        return "\u2500 \U0001f527 " + " \u2192 ".join(names)
+        if len(names) <= 4:
+            return "\u2500 \U0001f527 " + " \u2192 ".join(names)
+        # 4개 초과: 처음 2개 + 마지막 1개 + 생략 표시
+        shown = names[:2] + [f"...+{len(names) - 3}"] + names[-1:]
+        return "\u2500 \U0001f527 " + " \u2192 ".join(shown)
 
     @staticmethod
     def _stabilize_markdown(text: str) -> str:
@@ -546,15 +642,16 @@ class Supervisor:
 
     def _should_auto_resume(self, state: SessionState) -> bool:
         """자동 재개 여부를 판단."""
+        # no_resume 마킹 (슈퍼바이저/flag 재시작 시 busy였던 세션 → 루프 방지)
+        if state.no_resume_before_restart:
+            log(f"{state.name}: no_resume 마킹 → 자동 재개 스킵 (루프 방지)")
+            state.no_resume_before_restart = False
+            return False
         # reset 모드면 재개 안 함
         if state.last_restart_mode == "reset":
             log(f"{state.name}: reset 모드 → 자동 재개 스킵")
             return False
-        # 재시작 전 busy가 아니었으면 재개 불필요
-        if not state.was_busy_before_restart:
-            log(f"{state.name}: 재시작 전 대기 상태 → 자동 재개 스킵")
-            return False
-        # session_id 없으면 맥락 유실 → 재개 위험
+        # session_id 없으면 맥락 유실 → 재개 불가
         if not state.session_id:
             log(f"{state.name}: session_id 없음 (맥락 유실) → 자동 재개 스킵")
             return False
@@ -570,42 +667,59 @@ class Supervisor:
         return True
 
     async def _session_loop(self, state: SessionState):
-        # 자동 재개: 조건 충족 시에만
-        if state.connected and not state.message_queue.qsize():
-            if self._should_auto_resume(state):
-                state.resume_count += 1
-                log(f"{state.name}: 자동 재개 ({state.resume_count}/2) — AI에게 판단 위임")
-                await state.message_queue.put({
-                    "text": "이전에 하던 작업이 있으면 이어서 해줘. 없으면 대기해줘.",
-                    "msg_id": 0,
-                    "auto_resume": True,
-                })
-            else:
-                log(f"{state.name}: 연결 완료 — 대기 모드")
+        # auto-resume은 세션 개별 재시작(_restart_session)에서만 처리
+        # 슈퍼바이저 초기 시작 시에는 대기 모드
+        log(f"{state.name}: 세션 루프 시작 — 대기 모드")
+        _idle_count = 0
 
         while not self._shutdown:
             try:
                 msg_data = await asyncio.wait_for(
                     state.message_queue.get(), timeout=60
                 )
+                _idle_count = 0
             except (asyncio.TimeoutError, asyncio.CancelledError):
+                _idle_count += 1
+                if _idle_count % 5 == 0:  # 5분마다 heartbeat
+                    qsize = state.message_queue.qsize()
+                    log(f"{state.name}: 세션 루프 대기 중 ({_idle_count}분, 큐={qsize}, connected={state.connected})")
                 continue
             except BaseException:
                 continue
 
-            if state.paused or not state.client:
-                log(f"{state.name}: paused/미연결 상태, 큐 메시지 무시")
+            if not state.client:
+                retry = msg_data.get("retry_noclient", 0)
+                if retry < 10:
+                    msg_data["retry_noclient"] = retry + 1
+                    await state.message_queue.put(msg_data)
+                    if retry % 3 == 0:  # 매 3회마다 로그 (스팸 방지)
+                        log(f"{state.name}: client 없음, 재큐잉 ({retry+1}/10, 2초 대기)")
+                    await asyncio.sleep(2)
+                else:
+                    log(f"{state.name}: client 없음, 재시도 소진 (10회/20초) → 메시지 드롭")
+                    send_telegram(
+                        f"❌ 세션 초기화 실패, 메시지 처리 불가\n원본: {msg_data['text'][:200]}",
+                        state.config["bot_token"], state.name,
+                    )
                 continue
 
             if not state.connected:
                 await self._restart_session(state, "세션 미연결")
                 if not state.connected or not state.client:
-                    send_telegram(
-                        f"세션 연결 실패, 메시지 처리 불가: {msg_data['text']}",
-                        state.config["bot_token"], state.name,
-                    )
+                    retry = msg_data.get("retry_conn", 0)
+                    if retry < 1:
+                        msg_data["retry_conn"] = retry + 1
+                        await state.message_queue.put(msg_data)
+                        log(f"{state.name}: 세션 미연결, 재시도 큐잉 ({retry+1}/1)")
+                        await asyncio.sleep(2)
+                    else:
+                        send_telegram(
+                            f"❌ 세션 연결 실패, 메시지 처리 불가\n원본: {msg_data['text'][:200]}",
+                            state.config["bot_token"], state.name,
+                        )
                     continue
 
+            was_queued = msg_data.get("retry_count", 0) > 0 or msg_data.get("queued_while_busy", False)
             state.busy = True
             state.busy_since = time.time()
             text = msg_data["text"]
@@ -616,6 +730,14 @@ class Supervisor:
             if not is_auto_resume and state.resume_count > 0:
                 state.resume_count = 0
 
+            # 대기 중이던 메시지 처리 시 구분선 전송 (이전 응답과 혼동 방지)
+            if was_queued and not is_auto_resume:
+                await async_send_telegram(
+                    self._ahttp,
+                    f"── 대기 메시지 처리 ──\n💬 {text[:100]}",
+                    state.config["bot_token"], state.name,
+                )
+
             log(f"{state.name}: 메시지 처리 시작: {text[:50]}")
             # 처리 시작 알림은 수신 확인(✔️)으로 대체됨
 
@@ -623,7 +745,60 @@ class Supervisor:
                 client = state.client
                 if not client:
                     continue
-                await client.query(text)
+                # 버퍼 드레인: query() 전에 이전 턴의 잔여 메시지 제거 (N턴 밀림 방지)
+                drain_count = 0
+                drain_types = []
+                try:
+                    import anyio
+                    if hasattr(client, '_query') and client._query:
+                        stream = client._query._message_receive
+                        while True:
+                            try:
+                                stale = stream.receive_nowait()
+                                drain_count += 1
+                                msg_type = stale.get("type", "?")
+                                # 주요 내용 요약 (텍스트 블록이면 앞 50자)
+                                preview = ""
+                                if msg_type == "assistant":
+                                    content = stale.get("message", {}).get("content", [])
+                                    for b in content if isinstance(content, list) else []:
+                                        if isinstance(b, dict) and b.get("type") == "text":
+                                            preview = b.get("text", "")[:50]
+                                            break
+                                        elif isinstance(b, dict) and b.get("type") == "tool_use":
+                                            preview = f"tool:{b.get('name', '?')}"
+                                            break
+                                elif msg_type == "result":
+                                    preview = f"session={stale.get('session_id', '?')[:16]}"
+                                drain_types.append(f"{msg_type}({preview})" if preview else msg_type)
+                            except anyio.WouldBlock:
+                                break
+                            except anyio.ClosedResourceError:
+                                break
+                except Exception as e:
+                    log(f"{state.name}: 버퍼 드레인 에러: {e}")
+                if drain_count:
+                    log(f"{state.name}: 버퍼 드레인 {drain_count}건 제거: {drain_types[:10]}")
+
+                try:
+                    await asyncio.wait_for(client.query(text), timeout=10)
+                except asyncio.TimeoutError:
+                    retry = msg_data.get("retry_timeout", 0)
+                    log(f"{state.name}: query() 초기화 타임아웃 (10초), retry={retry}")
+                    await self._restart_session(state, "query 초기화 타임아웃", mode="resume", force=True)
+                    if retry < 2:
+                        msg_data["retry_timeout"] = retry + 1
+                        await state.message_queue.put(msg_data)
+                        log(f"{state.name}: 타임아웃 재시도 큐잉 ({retry+1}/2)")
+                        await asyncio.sleep((retry + 1) * 2)
+                    else:
+                        send_telegram(
+                            f"❌ 응답 타임아웃 (재시도 소진)\n원본: {msg_data['text'][:200]}",
+                            state.config["bot_token"], state.name,
+                        )
+                    state.busy = False
+                    continue
+
                 live_msg_id = 0  # 현재 editMessage 대상
                 live_lines = []  # 현재 메시지에 쌓인 텍스트
                 tool_lines = []  # 도구 호출 임시 버퍼 (텍스트 오면 정리)
@@ -631,12 +806,32 @@ class Supervisor:
                 msg_count = 0
                 last_edit = 0.0
                 edit_interval = 1.0  # 적응형 edit 간격 (초)
+                query_start = time.time()  # 빠른 응답 감지용
                 consecutive_edit_fails = 0  # 연속 edit 실패 횟수
+                last_progress_notify = 0  # 마지막 중간 알림 시각
                 bot_token = state.config["bot_token"]
 
                 async for msg in client.receive_messages():
                     if msg is None:
                         continue
+                    # client가 교체되었으면 (재시작) 현재 루프 중단
+                    if state.client is not client:
+                        log(f"{state.name}: client 교체 감지 → receive_messages 중단")
+                        break
+                    # 메시지 수신 타임아웃 체크 (10분 무응답 → 강제 중단)
+                    if time.time() - state.busy_since > 600 and msg_count == 0:
+                        log(f"{state.name}: 10분간 메시지 없음 → 강제 중단")
+                        break
+                    # 느린 응답 중간 알림 (2분마다)
+                    elapsed = time.time() - state.busy_since
+                    if elapsed > 120 and time.time() - last_progress_notify > 120:
+                        mins = int(elapsed / 60)
+                        await async_send_telegram(
+                            self._ahttp,
+                            f"⏳ 아직 처리 중... ({mins}분 경과, 도구 {msg_count}회 호출)",
+                            bot_token, state.name,
+                        )
+                        last_progress_notify = time.time()
                     msg_count += 1
 
                     if isinstance(msg, AssistantMessage):
@@ -677,39 +872,42 @@ class Supervisor:
                                     len(content) > 2000
                                 )
                             )
-                            if need_new_msg:
-                                # 기존 메시지 마무리 후 새 메시지 시작
-                                prev = "\n".join(live_lines[:-1]) if len(live_lines) > 1 else ""
-                                if prev:
-                                    await async_edit_telegram(self._ahttp, prev, live_msg_id, bot_token, state.name)
-                                new_start = live_lines[-1] if live_lines else ""
+                            if need_new_msg and len(live_lines) > 1:
+                                # 기존 메시지 마무리 후 새 메시지 시작 (2줄 이상일 때만)
+                                prev = "\n".join(live_lines[:-1])
+                                await async_edit_telegram(self._ahttp, prev, live_msg_id, bot_token, state.name)
+                                new_start = live_lines[-1]
                                 live_msg_id = await async_send_telegram(self._ahttp, new_start, bot_token, state.name)
-                                live_lines = [new_start] if new_start else []
+                                live_lines = [new_start]
                                 tool_lines = []
                                 last_edit = now
                             elif not live_msg_id:
-                                live_msg_id = await async_send_telegram(self._ahttp, content, bot_token, state.name)
-                                last_edit = now
+                                # 첫 메시지: 3초 버퍼링 — 빠른 응답은 edit 없이 최종 send로
+                                elapsed_since_start = now - query_start
+                                if elapsed_since_start >= 3.0:
+                                    live_msg_id = await async_send_telegram(self._ahttp, content, bot_token, state.name)
+                                    last_edit = now
+                                # 3초 미만이면 전송 보류 (최종 전송에서 한 번에)
                             elif now - last_edit >= edit_interval:
                                 # 4096자 한도 대비 여유 (prefix + 마진)
                                 max_len = 4096 - len(f"[{state.name}] ") - 50
-                                stable_content = self._stabilize_markdown(content)
+                                stable_content = _md_to_telegram_html(content)
                                 if len(content) > max_len:
                                     prev = "\n".join(live_lines[:-1]) if len(live_lines) > 1 else "\n".join(live_lines)
-                                    await async_edit_telegram(self._ahttp, self._stabilize_markdown(prev), live_msg_id, bot_token, state.name)
+                                    await async_edit_telegram(self._ahttp, _md_to_telegram_html(prev), live_msg_id, bot_token, state.name, use_html=True)
                                     new_start = live_lines[-1] if live_lines else ""
                                     live_msg_id = await async_send_telegram(self._ahttp, new_start, bot_token, state.name)
                                     live_lines = [new_start] if new_start else []
                                     tool_lines = []
                                 else:
-                                    ok = await async_edit_telegram(self._ahttp, stable_content, live_msg_id, bot_token, state.name)
+                                    ok = await async_edit_telegram(self._ahttp, stable_content, live_msg_id, bot_token, state.name, use_html=True)
                                     if not ok:
                                         consecutive_edit_fails += 1
                                         if consecutive_edit_fails >= 3:
                                             # rate limit 대응: 간격 증가
                                             edit_interval = min(edit_interval * 2, 5.0)
                                             consecutive_edit_fails = 0
-                                        live_msg_id = await async_send_telegram(self._ahttp, stable_content, bot_token, state.name)
+                                        live_msg_id = await async_send_telegram(self._ahttp, stable_content, bot_token, state.name, use_html=True)
                                     else:
                                         consecutive_edit_fails = 0
                                         # 성공 시 간격 점진 복원
@@ -752,6 +950,11 @@ class Supervisor:
                                     pass
                                 live_lines.append(f"\U0001f4ac {display_text}")
                                 log(f"{state.name}: [result] ai-chat ({len(result_text)}자)")
+                            elif last_tool_name in ("Edit", "Write", "NotebookEdit", "Read", "Grep", "Glob"):
+                                # 코드/파일 관련 결과는 길이만 표시 (내용 생략)
+                                if tool_lines:
+                                    tool_lines[-1] += f" ({len(result_text)}자)"
+                                log(f"{state.name}: [result] {last_tool_name} ({len(result_text)}자, 생략)")
                             elif len(result_text) <= 500:
                                 if tool_lines:
                                     live_lines.append(self._format_tool_line(tool_lines))
@@ -759,7 +962,6 @@ class Supervisor:
                                 live_lines.append(result_text)
                                 log(f"{state.name}: [result] short ({len(result_text)}자)")
                             else:
-                                snippet = result_text[:100].replace("\n", " ")
                                 # 마지막 도구 라인에 결과 요약 붙이기
                                 if tool_lines:
                                     tool_lines[-1] += f" ({len(result_text)}자)"
@@ -772,17 +974,17 @@ class Supervisor:
                                 display.append(self._format_tool_line(tool_lines))
                             content = "\n".join(display)
                             if not live_msg_id:
-                                live_msg_id = await async_send_telegram(self._ahttp, self._stabilize_markdown(content), bot_token, state.name)
+                                live_msg_id = await async_send_telegram(self._ahttp, _md_to_telegram_html(content), bot_token, state.name, use_html=True)
                                 last_edit = now
                             elif now - last_edit >= edit_interval:
-                                stable_content = self._stabilize_markdown(content)
-                                ok = await async_edit_telegram(self._ahttp, stable_content, live_msg_id, bot_token, state.name)
+                                stable_content = _md_to_telegram_html(content)
+                                ok = await async_edit_telegram(self._ahttp, stable_content, live_msg_id, bot_token, state.name, use_html=True)
                                 if not ok:
                                     consecutive_edit_fails += 1
                                     if consecutive_edit_fails >= 3:
                                         edit_interval = min(edit_interval * 2, 5.0)
                                         consecutive_edit_fails = 0
-                                    live_msg_id = await async_send_telegram(self._ahttp, stable_content, bot_token, state.name)
+                                    live_msg_id = await async_send_telegram(self._ahttp, stable_content, bot_token, state.name, use_html=True)
                                 else:
                                     consecutive_edit_fails = 0
                                     if edit_interval > 1.0:
@@ -793,6 +995,8 @@ class Supervisor:
                         if hasattr(msg, "session_id") and msg.session_id:
                             state.session_id = msg.session_id
                             self._save_session_ids()
+                        if msg.usage:
+                            log(f"{state.name}: [usage] {msg.usage}")
                         break
 
                 # 최종 업데이트 (HTML 변환 적용)
@@ -800,29 +1004,40 @@ class Supervisor:
                     live_lines.append(self._format_tool_line(tool_lines))
                 if live_lines:
                     content = "\n".join(live_lines)
-                    html_content = _md_to_telegram_html(content)
-                    # 분할이 필요한 긴 메시지는 새 메시지로 전송
-                    chunks = _split_message(html_content)
-                    if live_msg_id:
+                    # plain text에서 분할 후 각 청크별 HTML 변환 (태그 절단 방지)
+                    chunks = [_md_to_telegram_html(c) for c in _split_message(content)]
+                    elapsed = time.time() - query_start
+                    # 빠른 응답(3초 이내): editMessage 대신 새 메시지로 전송
+                    # → editMessage 지연으로 인한 "답변 밀림" 방지
+                    if live_msg_id and elapsed >= 3.0:
                         ok = await async_edit_telegram(self._ahttp, chunks[0], live_msg_id, bot_token, state.name, use_html=True)
                         if not ok:
-                            await async_send_telegram(self._ahttp, chunks[0], bot_token, state.name, use_html=True)
-                        # 추가 청크가 있으면 새 메시지로 전송
+                            await async_edit_telegram(self._ahttp, _split_message(content)[0], live_msg_id, bot_token, state.name)
                         for chunk in chunks[1:]:
                             await async_send_telegram(self._ahttp, chunk, bot_token, state.name, use_html=True)
                     else:
+                        # 빠른 응답이거나 live_msg_id 없음: 새 메시지로 전송
+                        if live_msg_id:
+                            # 기존 live 메시지 삭제 (중복 방지)
+                            try:
+                                await self._ahttp.post(
+                                    f"https://api.telegram.org/bot{bot_token}/deleteMessage",
+                                    json={"chat_id": CHAT_ID, "message_id": live_msg_id},
+                                    timeout=5,
+                                )
+                            except Exception:
+                                pass
                         for chunk in chunks:
                             await async_send_telegram(self._ahttp, chunk, bot_token, state.name, use_html=True)
-                    log(f"{state.name}: 최종 전송 ({len(content)}자, {len(chunks)}청크)")
+                    log(f"{state.name}: 최종 전송 ({len(content)}자, {len(chunks)}청크, {elapsed:.1f}s)")
                 else:
                     log(f"{state.name}: 빈 응답")
+                    await async_send_telegram(self._ahttp, "⚠️ 빈 응답", bot_token, state.name)
 
                 log(f"{state.name}: 처리 완료")
 
-                # 처리 완료 리액션 (✅)
-                msg_id = msg_data.get("msg_id")
-                if msg_id:
-                    await async_react(self._ahttp, bot_token, msg_id, "\u2705")
+                # 처리 완료 알림 (새 메시지, 알림 옴)
+                asyncio.create_task(async_send_telegram(self._ahttp, "✅", bot_token, state.name))
 
                 # 처리 완료 후 offset 확정 (재시작 시 미처리 메시지 재수신 보장)
                 processed_update_id = msg_data.get("update_id", 0)
@@ -839,19 +1054,44 @@ class Supervisor:
                     log(f"{state.name}: 정상 완료 → resume_count 리셋 ({state.resume_count} → 0)")
                     state.resume_count = 0
 
-                # 주기적 세션 리셋 체크
-                session_age = time.time() - state.start_time
-                if state.query_count >= SESSION_RESET_QUERIES or session_age >= SESSION_RESET_HOURS * 3600:
-                    log(f"{state.name}: 자동 리셋 (Q={state.query_count}, {int(session_age/3600)}h)")
-                    await self._restart_session(state, f"자동 리셋 (Q={state.query_count})", mode="reset")
+                # 자동 리셋 제거 — Claude auto-compact가 컨텍스트 관리
+                # 필요 시 수동으로 /reset 사용
 
-            except Exception as e:
-                log(f"{state.name}: 처리 에러: {e}")
+            except BaseException as e:
+                # CancelledError 포함 — 루프가 죽지 않도록 모든 예외 포착
+                err_name = type(e).__name__
+                err_str = str(e)
+                log(f"{state.name}: 처리 에러 ({err_name}): {e}")
                 state.error_count += 1
-                send_telegram(
-                    f"처리 에러: {e}",
-                    state.config["bot_token"], state.name,
-                )
+
+                # 이미지 누적 에러 → 자동 reset (resume으로는 해결 불가)
+                if "dimension limit" in err_str or "many-image" in err_str:
+                    log(f"{state.name}: 이미지 누적 에러 감지 → reset 모드 재시작")
+                    send_telegram(
+                        f"⚠️ 이미지 누적으로 컨텍스트 초과\n자동 reset 진행",
+                        state.config["bot_token"], state.name,
+                    )
+                    await self._restart_session(state, "이미지 누적 에러", mode="reset", force=True)
+                    continue
+
+                if state.restarting:
+                    # 리셋/재시작으로 인한 프로세스 종료 — 의도된 에러이므로 재시도 불필요
+                    log(f"{state.name}: 재시작 중 에러 무시 ({err_name})")
+                elif isinstance(e, (asyncio.CancelledError, KeyboardInterrupt)):
+                    # cancel/interrupt는 재시도 없이 다음 메시지로
+                    log(f"{state.name}: {err_name} — 루프 유지, 다음 메시지 대기")
+                else:
+                    retry = msg_data.get("retry_error", 0)
+                    if retry < 1:
+                        msg_data["retry_error"] = retry + 1
+                        await state.message_queue.put(msg_data)
+                        log(f"{state.name}: 에러 재시도 큐잉 ({retry+1}/1)")
+                        await asyncio.sleep(2)
+                    else:
+                        send_telegram(
+                            f"❌ 처리 실패: {e}\n원본: {msg_data['text'][:200]}",
+                            state.config["bot_token"], state.name,
+                        )
                 if state.error_count >= 3:
                     await self._restart_session(state, f"연속 에러 {state.error_count}회")
             finally:
@@ -864,33 +1104,38 @@ class Supervisor:
         bot_token = state.config["bot_token"]
         bot_id = state.config["bot_id"]
 
-        # offset 초기화
-        try:
-            r = await self._ahttp.get(
-                f"https://api.telegram.org/bot{bot_token}/getUpdates",
-                params={"timeout": 0}, timeout=10,
-            )
-            results = r.json().get("result", [])
-            if results:
-                last_id = max(u["update_id"] for u in results)
-                await self._ahttp.get(
+        # offset 복원 (저장된 offset이 있으면 사용, 없으면 flush)
+        saved_offset = self._load_offset(bot_id)
+        if saved_offset is not None:
+            self._update_ids[bot_id] = saved_offset
+            log(f"{name}: offset 복원 = {saved_offset}")
+        else:
+            try:
+                r = await self._ahttp.get(
                     f"https://api.telegram.org/bot{bot_token}/getUpdates",
-                    params={"offset": last_id + 1, "timeout": 0}, timeout=10,
+                    params={"timeout": 0}, timeout=10,
                 )
-                self._update_ids[bot_id] = last_id
-            else:
+                results = r.json().get("result", [])
+                if results:
+                    last_id = max(u["update_id"] for u in results)
+                    await self._ahttp.get(
+                        f"https://api.telegram.org/bot{bot_token}/getUpdates",
+                        params={"offset": last_id + 1, "timeout": 0}, timeout=10,
+                    )
+                    self._update_ids[bot_id] = last_id
+                else:
+                    self._update_ids[bot_id] = 0
+                log(f"{name}: offset 초기화 = {self._update_ids[bot_id]} (flushed {len(results)})")
+            except Exception as e:
+                log(f"{name}: offset 초기화 실패: {e}")
                 self._update_ids[bot_id] = 0
-            log(f"{name}: offset 초기화 = {self._update_ids[bot_id]} (flushed {len(results)})")
-        except Exception as e:
-            log(f"{name}: offset 초기화 실패: {e}")
-            self._update_ids[bot_id] = 0
 
         error_count = 0
+        _poll_count = 0
         while not self._shutdown:
-            if state.paused:
-                await asyncio.sleep(2)
-                continue
-
+            _poll_count += 1
+            if _poll_count % 20 == 0:  # ~10분마다 (25초 long poll × 20)
+                log(f"{name}: 폴링 루프 정상 (cycle={_poll_count}, errors={error_count})")
             last_id = self._update_ids.get(bot_id, 0)
             try:
                 r = await self._ahttp.get(
@@ -898,7 +1143,7 @@ class Supervisor:
                     params={
                         "offset": last_id + 1,
                         "timeout": 25,
-                        "allowed_updates": ["message"],
+                        "allowed_updates": ["message", "edited_message"],
                     },
                     timeout=35,
                 )
@@ -906,7 +1151,8 @@ class Supervisor:
                 updates = r.json().get("result", [])
                 for u in updates:
                     update_id = u["update_id"]
-                    msg = u.get("message", {})
+                    msg = u.get("message") or u.get("edited_message") or {}
+                    is_edited = "edited_message" in u
                     chat_id = str(msg.get("chat", {}).get("id", ""))
                     if chat_id != CHAT_ID:
                         self._update_ids[bot_id] = update_id
@@ -928,6 +1174,34 @@ class Supervisor:
                             if caption:
                                 text = f"{caption}\n\n이미지: {photo_path}"
 
+                    # 문서/파일 메시지 처리
+                    if not text and msg.get("document"):
+                        doc = msg["document"]
+                        file_name = doc.get("file_name", "unknown")
+                        file_id = doc.get("file_id", "")
+                        caption = msg.get("caption", "")
+                        if file_id:
+                            try:
+                                fr = await self._ahttp.get(
+                                    f"https://api.telegram.org/bot{bot_token}/getFile",
+                                    params={"file_id": file_id}, timeout=10,
+                                )
+                                file_path = fr.json().get("result", {}).get("file_path", "")
+                                if file_path:
+                                    dl_url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
+                                    save_dir = os.path.join(LOGS_DIR, "files")
+                                    os.makedirs(save_dir, exist_ok=True)
+                                    save_path = os.path.join(save_dir, file_name)
+                                    dr = await self._ahttp.get(dl_url, timeout=30)
+                                    with open(save_path, "wb") as f:
+                                        f.write(dr.content)
+                                    log(f"{name}: 파일 다운로드 완료: {save_path}")
+                                    text = f"이 파일을 확인해줘: {save_path}"
+                                    if caption:
+                                        text = f"{caption}\n\n파일: {save_path}"
+                            except Exception as e:
+                                log(f"{name}: 파일 다운로드 실패: {e}")
+
                     if not text:
                         self._update_ids[bot_id] = update_id
                         continue
@@ -938,44 +1212,90 @@ class Supervisor:
                         continue
 
                     sender = msg.get("from", {}).get("first_name", "")
-                    full_text = f"{sender}: {text}"
+                    edit_tag = " [수정]" if is_edited else ""
+                    full_text = f"{sender}{edit_tag}: {text}"
 
                     # 중복 메시지 제거 (message_id 기반)
                     msg_key = f"{name}_{msg_id}"
                     if msg_key in self._last_msg_map:
                         self._update_ids[bot_id] = update_id
                         continue
+                    # 네트워크 재전송 중복 제거 (같은 date + 같은 텍스트)
+                    msg_date_key = f"{name}_d{msg_date}_{text}"
+                    if msg_date_key in self._last_msg_map:
+                        log(f"{name}: 동일 date+텍스트 중복 스킵 (date={msg_date}): {text[:30]}")
+                        self._update_ids[bot_id] = update_id
+                        continue
                     self._last_msg_map[msg_key] = time.time()
+                    self._last_msg_map[msg_date_key] = time.time()
                     # 오래된 항목 정리 (100개 초과 시)
                     if len(self._last_msg_map) > 100:
                         cutoff = time.time() - 300
                         self._last_msg_map = {k: v for k, v in self._last_msg_map.items() if v > cutoff}
 
+                    # pause 상태: restart/reset 명령은 통과, 나머지 거부
+                    pause_flag = Path(TELEGRAM_DIR) / f"pause_{name}.flag"
+                    if pause_flag.exists():
+                        text_lower = text.strip().lower()
+                        if text_lower in ("restart", "reset", "재시작", "리셋", "/restart", "/reset"):
+                            # pause 해제 + restart flag 생성
+                            pause_flag.unlink(missing_ok=True)
+                            mode = "reset" if "reset" in text_lower or "리셋" in text_lower else "resume"
+                            restart_flag = Path(TELEGRAM_DIR) / f"restart_request_{name}.flag"
+                            restart_flag.write_text(f"force,{mode}" if mode != "resume" else "force")
+                            await async_send_telegram(self._ahttp, f"▶️ {name} pause 해제 + 재시작 요청됨", bot_token, name, reply_to=msg_id)
+                            self._update_ids[bot_id] = update_id
+                            self._save_offset(bot_id, update_id)
+                            log(f"{name}: PAUSED → 해제 (텔레그램 명령: {text_lower})")
+                            continue
+                        await async_send_telegram(self._ahttp, f"⏸️ {name} 일시정지 중. restart 또는 reset을 입력하세요.", bot_token, name, reply_to=msg_id)
+                        self._update_ids[bot_id] = update_id
+                        self._save_offset(bot_id, update_id)
+                        log(f"{name}: PAUSED — 메시지 거부: {text[:50]}")
+                        continue
+
+                    # 수신 확인 (큐 투입 전에 보내서 응답보다 먼저 도착 보장)
+                    if state.busy:
+                        qsize = state.message_queue.qsize() + 1
+                        ack = f"✔️ (처리 중, 대기 {qsize}건)"
+                    else:
+                        ack = "✔️"
+                    await async_send_telegram(self._ahttp, ack, bot_token, name, reply_to=msg_id)
+
                     await state.message_queue.put({
                         "text": full_text,
                         "msg_id": msg_id,
                         "update_id": update_id,
+                        "retry_count": 0,
+                        "queued_while_busy": state.busy,
                     })
-                    # 큐에 넣은 즉시 offset 갱신 (재폴링 방지)
+                    # 큐에 넣은 즉시 offset 갱신 (재폴링 방지) + 파일 저장
                     self._update_ids[bot_id] = update_id
-                    # 수신 확인 (fire-and-forget) — 원문 포함
-                    ack_text = f"\u2714\ufe0f {text[:50]}"
-                    asyncio.create_task(async_send_telegram(self._ahttp, ack_text, bot_token, name, reply_to=msg_id))
+                    self._save_offset(bot_id, update_id)
                     log(f"{name}: 메시지 수신: {text[:50]}")
                 if error_count > 0:
                     error_count = 0
             except Exception as e:
                 error_count += 1
                 if error_count % 10 == 1:
-                    log(f"{name}: 폴링 에러 #{error_count}: {e}")
+                    import traceback
+                    tb = traceback.format_exc()
+                    log(f"{name}: 폴링 에러 #{error_count}: {repr(e)}\n{tb}")
                 await asyncio.sleep(min(2 ** min(error_count, 5), 30))
 
     async def shutdown(self):
         self._shutdown = True
+        _notify_all("[HUB] 슈퍼바이저 종료 중...")
         if self._ahttp:
             await self._ahttp.aclose()
-        # client 참조만 해제 (disconnect는 프로세스 종료 시 자동 정리)
+        # ask 클라이언트 정리
+        if self._ask_client:
+            await self._safe_disconnect(self._ask_client, "ask")
+            self._ask_client = None
+        # 세션 클라이언트 disconnect
         for name, state in self.sessions.items():
+            if state.client:
+                await self._safe_disconnect(state.client, name)
             state.client = None
             state.connected = False
         self._write_status()

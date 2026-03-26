@@ -12,7 +12,19 @@ from .logging_utils import log
 from .telegram_api import send_telegram
 
 
+async def _do_interrupt(state, name: str, bot_token: str):
+    """세션의 현재 작업을 중단한다."""
+    try:
+        await state.client.interrupt()
+        log(f"{name}: interrupt 완료")
+        send_telegram(f"[SV] {name}: 작업 중단됨", bot_token)
+    except Exception as e:
+        log(f"{name}: interrupt 실패: {e}")
+        send_telegram(f"[SV] {name}: interrupt 실패 ({e})", bot_token)
+
+
 def _find_session_by_token(sessions: dict, bot_token: str) -> str | None:
+    """bot_token에 해당하는 세션 이름을 반환한다. 없으면 None."""
     for name, state in sessions.items():
         if state.config["bot_token"] == bot_token:
             return name
@@ -20,7 +32,10 @@ def _find_session_by_token(sessions: dict, bot_token: str) -> str | None:
 
 
 def _get_usage(http_client) -> str:
-    """Anthropic OAuth Usage API로 토큰 사용량 조회 (60초 캐시)"""
+    """Anthropic OAuth Usage API로 토큰 사용량 조회 (60초 캐시).
+
+    /usage 명령 수신 시 호출. http_client는 httpx.Client 인스턴스.
+    """
     import os
     cache_path = Path(os.environ.get("TEMP", "/tmp")) / "claude-sv-usage.json"
     # 캐시 확인
@@ -56,36 +71,7 @@ def _get_usage(http_client) -> str:
     except Exception as e:
         return f"[SV] 사용량 조회 실패: {e}"
 
-    # 포맷
-    def _bar(pct):
-        filled = round(pct / 5)  # 20칸 바
-        empty = 20 - filled
-        if pct >= 90:
-            icon = "\U0001f534"
-        elif pct >= 70:
-            icon = "\U0001f7e1"
-        else:
-            icon = "\U0001f7e2"
-        return f"{icon} {'|' * filled}{'.' * empty} {pct:.0f}%"
-
-    from datetime import datetime, timezone
-
-    def _reset_str(bucket):
-        reset_at = bucket.get("resets_at", "") if bucket else ""
-        if not reset_at:
-            return ""
-        try:
-            dt = datetime.fromisoformat(reset_at)
-            remaining = (dt - datetime.now(timezone.utc)).total_seconds()
-            if remaining <= 0:
-                return "(\ub9ac\uc14b\ub428)"
-            rm, rs = divmod(int(remaining), 60)
-            rh, rm = divmod(rm, 60)
-            if rh > 0:
-                return f"({rh}h {rm}m)"
-            return f"({rm}m)"
-        except Exception:
-            return ""
+    from .usage_fmt import usage_bar as _bar, reset_str as _reset_str
 
     five = data.get("five_hour", {})
     seven = data.get("seven_day", {})
@@ -118,7 +104,10 @@ def _get_usage(http_client) -> str:
 
 
 def handle_command(supervisor, text: str, bot_token: str) -> bool:
-    """슈퍼바이저 명령어 처리. 처리했으면 True 반환."""
+    """텔레그램 메시지가 /로 시작할 때 호출. 처리했으면 True 반환.
+
+    지원 명령: /status, /esc, /pause, /restart, /reset, /log, /usage, /sys, /ask, /help
+    """
     text = text.strip()
     if not text.startswith("/"):
         return False
@@ -131,67 +120,82 @@ def handle_command(supervisor, text: str, bot_token: str) -> bool:
         send_telegram("[SV] 슈퍼바이저 종료는 채팅방에서 불가합니다.", bot_token)
         return True
 
-    if cmd == "/status":
+    if cmd in ("/status", "/s"):
         now = time.time()
         uptime = int(now - supervisor._start_time)
         h, m = uptime // 3600, (uptime % 3600) // 60
         lines = [f"[SV] 가동 {h}시간 {m}분"]
         for name, state in supervisor.sessions.items():
-            status = "PAUSED" if state.paused else supervisor._assess_health(state)
+            status = supervisor._assess_health(state)
             lines.append(
                 f"  {name}: {status} | Q={state.query_count} E={state.error_count} R={state.restart_count}"
             )
         send_telegram("\n".join(lines), bot_token)
         return True
 
-    if cmd == "/restart":
+    if cmd in ("/restart", "/r"):
+        no_resume = False
         if arg:
-            name = arg
+            parts = arg.split()
+            name = parts[0]
+            no_resume = "noresume" in parts[1:]
         else:
             name = _find_session_by_token(supervisor.sessions, bot_token)
         if name and name.lower() == "supervisor":
             send_telegram("[SV] 슈퍼바이저 재시작합니다...", bot_token)
-            Path(TELEGRAM_DIR).joinpath("restart_request_supervisor.flag").write_text("resume")
+            Path(TELEGRAM_DIR).joinpath("restart_request_supervisor.flag").write_text("force")
             return True
         if name and name in supervisor.sessions:
-            asyncio.create_task(supervisor._restart_session(supervisor.sessions[name], "/restart 명령", mode="resume"))
-            send_telegram(f"[SV] {name} 재시작 요청됨", bot_token)
+            # pause 상태라면 해제
+            pause_flag = Path(TELEGRAM_DIR) / f"pause_{name}.flag"
+            if pause_flag.exists():
+                pause_flag.unlink(missing_ok=True)
+                log(f"{name}: pause 해제됨 (/restart 명령)")
+            asyncio.create_task(supervisor._restart_session(supervisor.sessions[name], "/restart 명령", mode="resume", force=True, no_resume=no_resume))
+            tag = " (noresume)" if no_resume else ""
+            send_telegram(f"[SV] {name} 재시작 요청됨{tag}", bot_token)
         elif name:
             send_telegram(f"[SV] 세션 '{name}' 없음. 가능: {', '.join(supervisor.sessions)}, supervisor", bot_token)
         return True
 
-    if cmd == "/wakeup":
-        # /wakeup → 봇 ID로 프로젝트 매핑, /wakeup <name> → 이름으로 매핑
+
+    if cmd in ("/pause", "/p"):
         if arg:
-            target = arg
+            name = arg
         else:
-            # 봇 토큰으로 프로젝트 찾기
-            target = None
-            for sname, sstate in supervisor.sessions.items():
-                if sstate.config["bot_token"] == bot_token:
-                    target = sname
-                    break
-        if target and target in supervisor.sessions:
-            pause_path = Path(TELEGRAM_DIR) / f"telegram_pause_{target}.flag"
-            if pause_path.exists():
-                pause_path.unlink(missing_ok=True)
-                send_telegram(f"[SV] {target}: wakeup 요청됨, pause 해제 중...", bot_token)
-            else:
-                send_telegram(f"[SV] {target}: 일시정지 상태가 아닙니다", bot_token)
-        elif target:
-            send_telegram(f"[SV] 세션 '{target}' 없음. 가능: {', '.join(supervisor.sessions)}", bot_token)
+            name = _find_session_by_token(supervisor.sessions, bot_token)
+        if name and name in supervisor.sessions:
+            pause_flag = Path(TELEGRAM_DIR) / f"pause_{name}.flag"
+            if pause_flag.exists():
+                send_telegram(f"[SV] {name} 이미 일시정지 상태입니다", bot_token)
+                return True
+            pause_flag.write_text(str(int(time.time())))
+            # 세션 disconnect
+            state = supervisor.sessions[name]
+            old_client = state.client
+            state.client = None
+            if old_client:
+                asyncio.create_task(supervisor._safe_disconnect(old_client, name))
+            state.connected = False
+            state.busy = False
+            log(f"{name}: 일시정지됨 (/pause 명령)")
+            send_telegram(f"[SV] {name} 일시정지됨", bot_token)
+        elif name:
+            send_telegram(f"[SV] 세션 '{name}' 없음. 가능: {', '.join(supervisor.sessions)}", bot_token)
         return True
 
-    if cmd == "/pause" and arg:
-        name = arg
-        if name in supervisor.sessions:
-            pause_path = Path(TELEGRAM_DIR) / f"telegram_pause_{name}.flag"
-            if pause_path.exists():
-                send_telegram(f"[SV] {name}: 이미 일시정지 상태입니다", bot_token)
-            else:
-                pause_path.write_text("pause")
-                send_telegram(f"[SV] {name}: 일시정지 요청됨", bot_token)
+    if cmd in ("/esc", "/interrupt"):
+        if arg:
+            name = arg
         else:
+            name = _find_session_by_token(supervisor.sessions, bot_token)
+        if name and name in supervisor.sessions:
+            state = supervisor.sessions[name]
+            if state.connected and state.client:
+                asyncio.create_task(_do_interrupt(state, name, bot_token))
+            else:
+                send_telegram(f"[SV] {name}: 연결 안 됨", bot_token)
+        elif name:
             send_telegram(f"[SV] 세션 '{name}' 없음. 가능: {', '.join(supervisor.sessions)}", bot_token)
         return True
 
@@ -201,13 +205,18 @@ def handle_command(supervisor, text: str, bot_token: str) -> bool:
         else:
             name = _find_session_by_token(supervisor.sessions, bot_token)
         if name and name in supervisor.sessions:
-            asyncio.create_task(supervisor._restart_session(supervisor.sessions[name], "/reset 명령 (컨텍스트 초기화)", mode="reset"))
+            # pause 상태라면 해제
+            pause_flag = Path(TELEGRAM_DIR) / f"pause_{name}.flag"
+            if pause_flag.exists():
+                pause_flag.unlink(missing_ok=True)
+                log(f"{name}: pause 해제됨 (/reset 명령)")
+            asyncio.create_task(supervisor._restart_session(supervisor.sessions[name], "/reset 명령 (컨텍스트 초기화)", mode="reset", force=True))
             send_telegram(f"[SV] {name} 리셋 요청됨", bot_token)
         elif name:
             send_telegram(f"[SV] 세션 '{name}' 없음. 가능: {', '.join(supervisor.sessions)}", bot_token)
         return True
 
-    if cmd == "/log":
+    if cmd in ("/log", "/l"):
         n = int(arg) if arg and arg.isdigit() else 20
         n = min(n, 50)  # 텔레그램 메시지 길이 제한
         try:
@@ -222,12 +231,46 @@ def handle_command(supervisor, text: str, bot_token: str) -> bool:
             send_telegram(f"[SV] 로그 읽기 실패: {e}", bot_token)
         return True
 
-    if cmd == "/usage":
+    if cmd in ("/usage", "/u"):
         usage_text = _get_usage(supervisor._http)
         send_telegram(usage_text, bot_token)
         return True
 
+    if cmd == "/ctx":
+        # 각 세션의 마지막 usage 로그에서 컨텍스트 사용량 추정
+        lines = ["[SV] 컨텍스트 사용량 (추정)"]
+        try:
+            with open(LOG_FILE, "r", encoding="utf-8") as f:
+                log_lines = f.readlines()
+        except Exception:
+            log_lines = []
+        for name, state in supervisor.sessions.items():
+            usage_data = None
+            for line in reversed(log_lines):
+                if f"{name}: [usage]" in line:
+                    try:
+                        idx = line.index("{")
+                        usage_data = eval(line[idx:].strip())
+                    except Exception:
+                        pass
+                    break
+            if usage_data:
+                inp = usage_data.get("input_tokens", 0)
+                cache_read = usage_data.get("cache_read_input_tokens", 0)
+                cache_create = usage_data.get("cache_creation_input_tokens", 0)
+                out = usage_data.get("output_tokens", 0)
+                lines.append(
+                    f"  {name}: in={inp:,} cache_r={cache_read:,} cache_w={cache_create:,} out={out:,}"
+                )
+            else:
+                lines.append(f"  {name}: 데이터 없음")
+        lines.append("\n⚠️ SDK usage 기반 추정값. 정확한 ctx%는 CLI 상태줄 참조")
+        send_telegram("\n".join(lines), bot_token)
+        return True
+
     if cmd == "/sys":
+        proc_limit = int(arg) if arg and arg.isdigit() else 10
+        proc_limit = min(proc_limit, 30)
         lines = ["[SV] 시스템 상태"]
         try:
             import psutil
@@ -246,9 +289,8 @@ def handle_command(supervisor, text: str, bot_token: str) -> bool:
             disk_total = disk.total / (1024**3)
             lines.append(f"\U0001f4c1 디스크(D:): {disk_used:.0f}/{disk_total:.0f}GB ({disk.percent}%)")
             # Claude processes
-            lines.append(f"\n\U0001f4cb 프로세스:")
+            lines.append(f"\n\U0001f4cb 프로세스 (상위 {proc_limit}개):")
             claude_procs = []
-            node_procs = []
             for proc in psutil.process_iter(["pid", "name", "memory_info", "cpu_percent", "cmdline"]):
                 try:
                     pname = proc.info["name"] or ""
@@ -261,7 +303,7 @@ def handle_command(supervisor, text: str, bot_token: str) -> bool:
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
             if claude_procs:
-                for pname, pid, mem_mb, cpu_p in sorted(claude_procs, key=lambda x: -x[2]):
+                for pname, pid, mem_mb, cpu_p in sorted(claude_procs, key=lambda x: -x[2])[:proc_limit]:
                     lines.append(f"  {pname}(PID:{pid}) {mem_mb:.0f}MB CPU:{cpu_p:.0f}%")
             else:
                 lines.append("  Claude 관련 프로세스 없음")
@@ -283,26 +325,27 @@ def handle_command(supervisor, text: str, bot_token: str) -> bool:
         asyncio.create_task(supervisor._handle_ask(arg, bot_token))
         return True
 
-    if cmd == "/help":
+    if cmd in ("/help", "/h"):
         names = ", ".join(supervisor.sessions.keys())
         send_telegram(
-            "[SV] 명령어 목록 (슈퍼바이저 정상 가동 중)\n"
+            "[SV] 명령어\n"
             f"\n"
             f"\U0001f4ca 상태\n"
-            f"  /status \u2014 전체 세션 상태 (가동시간, 쿼리수, 에러수)\n"
-            f"  /usage \u2014 토큰 사용량 (rate limit 사용률)\n"
-            f"  /sys \u2014 시스템 상태 (CPU, 메모리, 프로세스)\n"
-            f"  /log [N] \u2014 최근 로그 N줄 (기본 20, 최대 50)\n"
+            f"  /status (/s) \u2014 세션 상태\n"
+            f"  /usage  (/u) \u2014 사용량\n"
+            f"  /ctx \u2014 컨텍스트 사용량\n"
+            f"  /sys \u2014 시스템\n"
+            f"  /log (/l) [N] \u2014 로그\n"
             f"\n"
-            f"\U0001f504 세션 관리\n"
-            f"  /restart <name> \u2014 세션 재시작 (SDK reconnect, 컨텍스트 유지)\n"
-            f"  /reset <name> \u2014 세션 리셋 (새 대화, 컨텍스트 초기화)\n"
-            f"  /pause <name> \u2014 세션 일시정지 (메시지 수신 중단)\n"
-            f"  /wakeup [name] \u2014 pause 해제 (이름 생략 시 현재 채팅방)\n"
+            f"\U0001f504 세션\n"
+            f"  /esc <name> \u2014 작업 중단 (interrupt)\n"
+            f"  /pause (/p) <name> \u2014 일시정지\n"
+            f"  /restart (/r) <name> [noresume] \u2014 재시작\n"
+            f"  /reset <name> \u2014 리셋\n"
             f"\n"
             f"\u2139\ufe0f 기타\n"
-            f"  /ask <질문> \u2014 Claude에게 질문 (상시 세션)\n"
-            f"  /help \u2014 이 목록\n"
+            f"  /ask <질문> \u2014 Claude 질문\n"
+            f"  /help (/h) \u2014 이 목록\n"
             f"\n"
             f"세션: {names}",
             bot_token,

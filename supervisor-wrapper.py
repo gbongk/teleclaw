@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-슈퍼바이저 래퍼 — supervisor.py를 감싸서 자동 재시작 + 데스루프 방지.
+슈퍼바이저 래퍼 — supervisor 패키지를 감싸서 자동 재시작 + 데스루프 방지.
 
 - 30초 미만 생존 = 코드 에러로 판정
 - 지수 백오프: 3초 → 30초 → 5분 → 30분(최대)
@@ -20,14 +20,16 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-SUPERVISOR = os.path.join(os.path.dirname(__file__), "supervisor.py")
+SUPERVISOR_DIR = os.path.dirname(__file__)
 PYTHON = sys.executable
 LOGS_DIR = os.path.join(os.path.dirname(__file__), "logs")
 LOG_FILE = os.path.join(LOGS_DIR, "wrapper.log")
 SV_LOG_FILE = os.path.join(LOGS_DIR, "supervisor.log")
 LOCK_FILE = os.path.join(LOGS_DIR, "wrapper.lock")
-CHAT_ID = "8510879138"
-BOT_TOKEN = "8590076448:AAHea0Rwj568h5-qcT4aqhSwsf2maGKA-2Y"
+sys.path.insert(0, os.path.dirname(__file__))
+from hub.config import PROJECTS, CHAT_ID
+BOT_TOKENS = [p["bot_token"] for p in PROJECTS.values()]
+BOT_TOKEN = BOT_TOKENS[0] if BOT_TOKENS else ""
 
 MIN_ALIVE_SEC = 30
 BACKOFF_BASE = 3
@@ -65,10 +67,12 @@ def tg_send(text: str):
         log(f"텔레그램 알림 실패: {e}")
 
 
-def tg_get_updates(offset: int, timeout: int = 5) -> tuple[list, int]:
+def tg_get_updates(offset: int, timeout: int = 5, bot_token: str = "") -> tuple[list, int]:
     """텔레그램 메시지 폴링. (messages, new_offset) 반환."""
+    if not bot_token:
+        bot_token = BOT_TOKEN
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+        url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
         data = json.dumps({
             "offset": offset,
             "timeout": timeout,
@@ -93,11 +97,11 @@ def tg_get_updates(offset: int, timeout: int = 5) -> tuple[list, int]:
         return [], offset
 
 
-def tg_flush(offset: int) -> int:
+def tg_flush(offset: int, bot_token: str = "") -> int:
     """기존 pending 메시지를 모두 소비하고 최신 offset 반환."""
-    msgs, new_offset = tg_get_updates(offset, timeout=0)
+    msgs, new_offset = tg_get_updates(offset, timeout=0, bot_token=bot_token)
     while msgs:
-        msgs, new_offset = tg_get_updates(new_offset, timeout=0)
+        msgs, new_offset = tg_get_updates(new_offset, timeout=0, bot_token=bot_token)
     return new_offset
 
 
@@ -183,39 +187,36 @@ def handle_emergency_command(text: str, fail_count: int, wait: int, start_time: 
     return None
 
 
-_poll_offset = 0  # 폴링 offset (모듈 레벨로 유지)
+_poll_offsets = {token: 0 for token in BOT_TOKENS}  # 봇별 폴링 offset
 
 def wait_with_polling(wait_sec: int, fail_count: int, start_time: float) -> str | None:
-    """백오프 대기 중 텔레그램 폴링. 'restart'/'kill' 반환 시 즉시 탈출."""
-    global _poll_offset
+    """백오프 대기 중 텔레그램 폴링 (3개 봇 순차). 'restart'/'kill' 반환 시 즉시 탈출."""
+    global _poll_offsets
     deadline = time.time() + wait_sec
-    log(f"비상 폴링 시작 (대기 {wait_sec}초)")
+    log(f"비상 폴링 시작 (대기 {wait_sec}초, {len(BOT_TOKENS)}개 봇)")
 
     while time.time() < deadline:
         remaining = int(deadline - time.time())
         if remaining <= 0:
             break
-        poll_timeout = min(remaining, 10)
-        messages, _poll_offset = tg_get_updates(_poll_offset, timeout=poll_timeout)
-        for text in messages:
-            log(f"비상 명령 수신: {text}")
-            result = handle_emergency_command(text, fail_count, wait_sec, start_time)
-            if result:
-                return result
+        poll_timeout = min(remaining, 3)  # 봇당 3초 (3개 × 3초 ≈ 9초/라운드)
+        for token in BOT_TOKENS:
+            messages, _poll_offsets[token] = tg_get_updates(_poll_offsets[token], timeout=poll_timeout, bot_token=token)
+            for text in messages:
+                log(f"비상 명령 수신: {text}")
+                result = handle_emergency_command(text, fail_count, wait_sec, start_time)
+                if result:
+                    return result
+            if time.time() >= deadline:
+                break
 
     log("비상 폴링 종료")
     return None
 
 
 def _is_pid_alive(pid: int) -> bool:
-    try:
-        r = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-            capture_output=True, text=True, timeout=5
-        )
-        return str(pid) in r.stdout
-    except Exception:
-        return False
+    from hub.process_utils import is_pid_alive
+    return is_pid_alive(pid)
 
 
 def _acquire_lock() -> bool:
@@ -257,9 +258,11 @@ def main():
     fail_count = 0
     notified = False
     start_time = time.time()
+    recent_restarts = []  # 정상 종료 포함 전체 재시작 시각 기록
 
-    # 시작 시 기존 메시지 flush (1회만)
-    _poll_offset = tg_flush(0)
+    # 시작 시 기존 메시지 flush (모든 봇)
+    for token in BOT_TOKENS:
+        _poll_offsets[token] = tg_flush(0, bot_token=token)
 
     log("래퍼 시작")
 
@@ -267,14 +270,39 @@ def main():
         log(f"supervisor 시작 (fail_count={fail_count})")
         sv_start = time.time()
 
-        proc = subprocess.run(
-            [PYTHON, SUPERVISOR],
-            cwd=os.path.dirname(SUPERVISOR),
-        )
+        # stderr만 파일로 캡처 (capture_output은 자식 프로세스 blocking 유발)
+        stderr_file = os.path.join(LOGS_DIR, "supervisor_stderr.log")
+        with open(stderr_file, "w", encoding="utf-8") as sf:
+            proc = subprocess.run(
+                [PYTHON, "-m", "hub"],
+                cwd=SUPERVISOR_DIR,
+                stderr=sf,
+            )
 
         elapsed = time.time() - sv_start
         exit_code = proc.returncode
         log(f"supervisor 종료 (exit_code={exit_code}, 생존={elapsed:.0f}초)")
+
+        # 짧은 시간 반복 재시작 경고 (10분 내 5회 이상)
+        now = time.time()
+        recent_restarts.append(now)
+        recent_restarts = [t for t in recent_restarts if now - t < 600]
+        if len(recent_restarts) >= 5:
+            tg_send(f"⚠️ 잦은 재시작 감지: {len(recent_restarts)}회/10분\n마지막 생존: {elapsed:.0f}초, exit_code={exit_code}")
+            log(f"잦은 재시작 경고: {len(recent_restarts)}회/10분")
+
+        # 비정상 종료 시 stderr 기록
+        if exit_code != 0:
+            try:
+                with open(stderr_file, "r", encoding="utf-8", errors="replace") as sf:
+                    stderr_content = sf.read().strip()
+                if stderr_content:
+                    stderr_tail = stderr_content[-500:]
+                    log(f"supervisor stderr: {stderr_tail}")
+                    if elapsed < MIN_ALIVE_SEC:
+                        tg_send(f"🔍 supervisor 크래시 stderr:\n{stderr_tail[:1000]}")
+            except Exception:
+                pass
 
         # 기존 인스턴스 실행 중 → 60초 폴링 대기
         if exit_code == EXIT_ALREADY_RUNNING:
@@ -292,7 +320,13 @@ def main():
             fail_count += 1
             wait = min(BACKOFF_BASE * (2 ** (fail_count - 1)), BACKOFF_MAX)
 
-            if not notified:
+            # 첫 실패 + 5/10/20/50회마다 반복 알림
+            should_notify = (
+                not notified
+                or fail_count in (5, 10, 20, 50)
+                or (fail_count > 50 and fail_count % 50 == 0)
+            )
+            if should_notify:
                 tg_send(
                     f"⚠️ 슈퍼바이저 비정상 종료\n"
                     f"생존시간: {elapsed:.0f}초\n"

@@ -72,7 +72,7 @@ bash D:/workspace/mcp/scripts/check-session-status.sh restart new   # STUCK → 
 
 ### relay-tool-use.py
 
-PostToolUse 훅. `relay_enabled` 플래그가 활성인 supervised 세션에서만 동작. transcript JSONL에서 마지막 assistant 텍스트를 추출하고, 도구 사용 요약과 함께 텔레그램으로 전송한다. Read/Grep/Glob 등 읽기 전용 도구는 텍스트만 중계하고 도구 요약은 생략.
+PostToolUse 훅. `relay_enabled` 플래그가 활성인 supervised 세션에서만 동작. transcript JSONL에서 마지막 assistant 텍스트를 추출하고, 도구 사용 요약과 함께 텔레그램으로 전송한다. Read/Grep/Glob 등 읽기 전용 도구는 텍스트만 중계하고 도구 요약은 생략. `filter_assistant_text()`로 노이즈 제거: Shell cwd reset 라인, 연속 OK/PASS 테스트 라인(요약으로 압축), 도구 내부 표시(─ 🔧) 라인 필터링.
 
 ### relay-stop.py
 
@@ -159,14 +159,23 @@ STUCK     — heartbeat 30분+ AND pending 메시지 있음
 DEAD      — 프로세스 없음
 ```
 
-자동 재시작 대상: **DEAD**, **STUCK**
+자동 재시작 대상: **DEAD**, **STUCK** (단, `pause_{name}.flag` 있으면 스킵)
+
+### 일시정지 (Pause)
+
+`pause_{name}.flag` 파일이 `data/`에 존재하면 해당 세션은 일시정지 상태:
+- 슈퍼바이저 시작 시 연결 스킵
+- health check에서 DEAD/STUCK 감지해도 재시작 안 함
+- `restart`/`reset` 요청 시 자동 해제
+- `svctl.py ps`에서 PAUSED로 표시
 
 ### 감시 루프
 
 ```
 1초 폴링 (메인 루프)
-  ├─ restart_request_{name}.flag 감지 → 즉시 재시작
+  ├─ restart_request_{name}.flag 감지 → pause 해제 + 즉시 재시작
   └─ 120초마다 health_check_all()
+       ├─ pause_{name}.flag 있으면 → 스킵
        ├─ DEAD/STUCK → restart_session()
        ├─ INACTIVE → 15분마다 텔레그램 알림
        └─ supervisor_status.json 갱신
@@ -232,6 +241,7 @@ relay 훅은 아래 조건을 모두 만족할 때만 동작:
 | `wait_mode_{SESSION_ID}.flag` | telegram server | stop-telegram-check.sh | wait 모드 활성 여부 |
 | `relay_enabled_{BOT_ID}_{CHAT_ID}.flag` | telegram server | relay-tool-use.py, relay-stop.py | 텔레그램 중계 활성 |
 | `restart_request_{NAME}.flag` | Claude 세션 / 외부 | supervisor | 재시작 요청 (내용: resume/new) |
+| `pause_{NAME}.flag` | svctl.py | supervisor | 세션 일시정지 (restart/reset으로 자동 해제) |
 
 ### Supervisor 상태 (`D:/workspace/mcp/logs/`)
 
