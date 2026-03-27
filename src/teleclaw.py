@@ -855,8 +855,8 @@ class TeleClaw:
                 bot_token = state.config["bot_token"]
                 ch = state.channel
 
-                async for msg in client.receive_messages():
-                    if msg is None:
+                async for sdk_msg in client.receive_messages():
+                    if sdk_msg is None:
                         continue
                     # client가 교체되었으면 (재시작) 현재 루프 중단
                     if state.client is not client:
@@ -874,9 +874,9 @@ class TeleClaw:
                         last_progress_notify = time.time()
                     msg_count += 1
 
-                    if isinstance(msg, AssistantMessage):
+                    if isinstance(sdk_msg, AssistantMessage):
                         _lvl = self.output_level
-                        for block in msg.content:
+                        for block in sdk_msg.content:
                             block_type = type(block).__name__
                             if hasattr(block, "text") and block.text.strip():
                                 # TextBlock — 텍스트 응답 도착하면 도구 요약 정리
@@ -958,10 +958,10 @@ class TeleClaw:
                                             edit_interval = max(edit_interval - 0.5, 1.0)
                                 last_edit = now
 
-                    elif isinstance(msg, UserMessage):
+                    elif isinstance(sdk_msg, UserMessage):
                         # ToolResult 처리 — ai-chat 결과는 전문, 나머지는 요약
                         result_text = ""
-                        for block in msg.content:
+                        for block in sdk_msg.content:
                             bt = type(block).__name__
                             if hasattr(block, "text") and block.text:
                                 result_text = block.text.strip()
@@ -1038,28 +1038,28 @@ class TeleClaw:
                                         edit_interval = max(edit_interval - 0.5, 1.0)
                                 last_edit = now
 
-                    elif isinstance(msg, ResultMessage):
-                        if hasattr(msg, "session_id") and msg.session_id:
-                            state.session_id = msg.session_id
+                    elif isinstance(sdk_msg, ResultMessage):
+                        if hasattr(sdk_msg, "session_id") and sdk_msg.session_id:
+                            state.session_id = sdk_msg.session_id
                             self._save_session_ids()
-                        if msg.usage:
-                            log(f"{state.name}: [usage] {msg.usage}")
+                        if sdk_msg.usage:
+                            log(f"{state.name}: [usage] {sdk_msg.usage}")
                         # 라이브 스트리밍이 비었으면 ResultMessage.result로 폴백
-                        if not live_lines and msg.result:
-                            result_text = msg.result.strip()
+                        if not live_lines and sdk_msg.result:
+                            result_text = sdk_msg.result.strip()
                             if result_text:
                                 live_lines.append(result_text)
                                 log(f"{state.name}: [result-fallback] {len(result_text)}자")
-                        if hasattr(msg, "total_cost_usd") and msg.total_cost_usd:
-                            log(f"{state.name}: [cost] ${msg.total_cost_usd:.4f}")
+                        if hasattr(sdk_msg, "total_cost_usd") and sdk_msg.total_cost_usd:
+                            log(f"{state.name}: [cost] ${sdk_msg.total_cost_usd:.4f}")
                         break
 
-                    elif isinstance(msg, SystemMessage):
-                        subtype = getattr(msg, "subtype", "?")
+                    elif isinstance(sdk_msg, SystemMessage):
+                        subtype = getattr(sdk_msg, "subtype", "?")
                         log(f"{state.name}: [system] subtype={subtype}")
 
-                    elif isinstance(msg, StreamEvent):
-                        event = getattr(msg, "event", "?")
+                    elif isinstance(sdk_msg, StreamEvent):
+                        event = getattr(sdk_msg, "event", "?")
                         log(f"{state.name}: [stream] event={event}")
 
                 # 최종 업데이트 (HTML 변환 적용)
