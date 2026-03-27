@@ -146,20 +146,40 @@ teleclaw
 
 ## Telegram Commands
 
+### TeleClaw
+
 | Command | Description |
 |---|---|
 | *(any message)* | Send instruction to Claude Code |
 | `/status` (`/s`) | Session status (OK / DEAD / STUCK) |
-| `/usage` (`/u`) | Claude usage (5h / 7d limits) |
-| `/ctx` | Context window usage per session |
+| `/usage` (`/u`) | Claude API usage (5h / 7d limits) |
+| `/sys` | System info (CPU / memory / processes) |
+| `/log` (`/l`) `[N]` | Recent logs (default 20 lines) |
+| `/mode` `[minimal/normal]` | Output verbosity mode |
+
+### Session Management
+
+| Command | Description |
+|---|---|
+| `/esc` (`/interrupt`) `<name>` | Interrupt current task |
+| `/pause` (`/p`) `<name>` | Pause session |
 | `/restart` (`/r`) `[name]` | Restart session (with auto-resume) |
 | `/reset [name]` | Reset session (clear context) |
-| `/pause` (`/p`) `<name>` | Pause session |
-| `/esc <name>` | Interrupt current task |
-| `/log` (`/l`) `[N]` | Recent logs (default 20 lines) |
-| `/sys` | System info (CPU / memory / processes) |
 | `/ask <question>` | Quick question (separate session) |
 | `/help` (`/h`) | Command list |
+
+### Claude Code (passed to session)
+
+Any other `/` command is forwarded directly to the Claude Code session:
+
+```
+/compact    — compress context
+/context    — context usage details
+/cost       — session cost and duration
+/review     — PR review
+/simplify   — code quality review
+...and more
+```
 
 ## CLI Commands
 
