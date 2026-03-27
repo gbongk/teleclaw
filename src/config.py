@@ -6,28 +6,43 @@ import sys
 # --- config.yaml 로드 ---
 
 _TELECLAW_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_CONFIG_PATH = os.path.join(_TELECLAW_DIR, "config.yaml")
+# config.yaml 탐색: CWD → 패키지 상위 → 홈 디렉토리
+_CONFIG_PATH = ""
+for _candidate in [
+    os.path.join(os.getcwd(), "config.yaml"),
+    os.path.join(_TELECLAW_DIR, "config.yaml"),
+    os.path.join(os.path.expanduser("~"), ".teleclaw", "config.yaml"),
+]:
+    if os.path.exists(_candidate):
+        _CONFIG_PATH = _candidate
+        break
+if not _CONFIG_PATH:
+    _CONFIG_PATH = os.path.join(_TELECLAW_DIR, "config.yaml")  # 폴백 (파일 없음 경고용)
 
 
 def _load_yaml(path: str) -> dict:
-    """PyYAML 없이 간단한 YAML 파싱. 중첩 1단계만 지원."""
+    """config.yaml 로드. PyYAML 우선, 없으면 간단 파서 폴백."""
     if not os.path.exists(path):
         print(f"[config] config.yaml not found: {path}", file=sys.stderr)
         print(f"[config] Run: cp config.example.yaml config.yaml", file=sys.stderr)
         return {}
     with open(path, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-
+        content = f.read()
+    # PyYAML 우선
+    try:
+        import yaml
+        return yaml.safe_load(content) or {}
+    except ImportError:
+        pass
+    # 폴백: 간단 파서 (중첩 2단계까지)
     result = {}
     current_section = None
     current_item = None
-
-    for line in lines:
+    for line in content.splitlines():
         stripped = line.rstrip()
-        if not stripped or stripped.startswith("#"):
+        if not stripped or stripped.lstrip().startswith("#"):
             continue
         indent = len(line) - len(line.lstrip())
-
         if indent == 0 and ":" in stripped:
             key, _, val = stripped.partition(":")
             val = val.strip().strip('"').strip("'")
@@ -52,7 +67,6 @@ def _load_yaml(path: str) -> dict:
             key, _, val = stripped.partition(":")
             val = val.strip().strip('"').strip("'")
             result[current_section][current_item][key.strip()] = val
-
     return result
 
 
@@ -61,6 +75,8 @@ _cfg = _load_yaml(_CONFIG_PATH)
 # --- 프로젝트 설정 ---
 
 CHAT_ID = _cfg.get("chat_id", "")
+if not CHAT_ID:
+    print("[config] WARNING: chat_id is empty — no users will be allowed", file=sys.stderr)
 LANG = _cfg.get("lang", "en")
 
 # 알림 아이콘 (커스터마이즈 가능)
@@ -89,7 +105,8 @@ for name, info in _cfg.get("projects", {}).items():
 
 # --- 경로 ---
 
-TELECLAW_DIR = _TELECLAW_DIR
+# config.yaml 위치 기준으로 디렉토리 설정 (pip install 환경 대응)
+TELECLAW_DIR = os.path.dirname(_CONFIG_PATH) if _CONFIG_PATH else _TELECLAW_DIR
 LOGS_DIR = os.path.join(TELECLAW_DIR, "logs")
 LOG_FILE = os.path.join(LOGS_DIR, "teleclaw.log")
 LOCK_FILE = os.path.join(LOGS_DIR, "teleclaw.lock")

@@ -271,14 +271,14 @@ class TeleClaw:
             ch.send_sync(msg("ask_processing"))
             await self._ask_client.query(question)
             answer_parts = []
-            async for msg in self._ask_client.receive_messages():
-                if msg is None:
+            async for ask_msg in self._ask_client.receive_messages():
+                if ask_msg is None:
                     continue
-                if isinstance(msg, AssistantMessage):
-                    for block in msg.content:
+                if isinstance(ask_msg, AssistantMessage):
+                    for block in ask_msg.content:
                         if hasattr(block, "text") and block.text.strip():
                             answer_parts.append(block.text.strip())
-                elif isinstance(msg, ResultMessage):
+                elif isinstance(ask_msg, ResultMessage):
                     break
             answer = "\n".join(answer_parts) if answer_parts else "(빈 응답)"
             if len(answer) > 3900:
@@ -1186,7 +1186,7 @@ class TeleClaw:
                     msg_id_str = m["id"]
                     msg_id = int(msg_id_str) if msg_id_str else 0
                     from_id = m.get("from_id", "")
-                    if from_id and str(from_id) not in ALLOWED_USERS:
+                    if not ALLOWED_USERS or (from_id and str(from_id) not in ALLOWED_USERS):
                         log(f"{name}: 미허용 사용자 메시지 무시 (from_id={from_id})")
                         continue
                     msg_date = m.get("date", 0)
@@ -1223,7 +1223,7 @@ class TeleClaw:
                     if not text:
                         continue
 
-                    if self._handle_command(text, bot_token):
+                    if await asyncio.to_thread(self._handle_command, text, bot_token):
                         log(f"{name}: 명령어 처리: {text}")
                         continue
 
