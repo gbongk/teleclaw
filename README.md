@@ -8,6 +8,27 @@
 
 Keep Claude Code working on your projects while you're away from your desk — monitor progress, send instructions, and manage multiple sessions from your phone.
 
+## Why TeleClaw?
+
+While [Claude Code Channels](https://code.claude.com/docs/en/channels) provides official Telegram/Discord integration, TeleClaw is built for developers who need a **production-grade remote environment**:
+
+- **Multi-project management** — Run N independent Claude sessions simultaneously, each with its own Telegram bot
+- **High availability** — 3-tier auto-recovery: health check (2min) + daemon wrapper (exponential backoff) + system service (systemd/Task Scheduler)
+- **Live streaming** — Real-time `editMessage` updates with 3-second buffering, not just final responses
+- **Output modes** — Switch between `minimal` (text only) and `normal` (text + tool summaries) via `/mode`
+- **Stateful persistence** — SQLite-backed session management with reliable state recovery
+- **CLI tooling** — `teleclaw_ctl` for terminal-based daemon management
+- **Slash command passthrough** — `/compact`, `/context`, `/cost` and other Claude Code commands work directly from Telegram
+
+## Security
+
+TeleClaw provides powerful remote access to your system. Please follow these guidelines:
+
+- **Permission bypass** — TeleClaw runs with `bypassPermissions` for seamless remote operation. The AI can execute system commands without manual approval. **Use only in trusted environments.**
+- **Bot token protection** — Your Telegram bot token grants access to your system. Never commit it to public repositories. Keep it in `config.yaml` (gitignored) or environment variables.
+- **Private chat only** — Use TeleClaw in 1:1 chat with your bot, not in group chats.
+- **User whitelist** — Always configure `chat_id` in `config.yaml`. If left empty, all messages are rejected. Use `allowed_users` to add additional trusted user IDs.
+
 ## How it Works
 
 TeleClaw uses the [Claude Code SDK](https://www.npmjs.com/package/@anthropic-ai/claude-code) to spawn and manage Claude Code as subprocesses. Each project gets its own long-lived SDK session with preserved context — so Claude remembers what it was working on across messages.
