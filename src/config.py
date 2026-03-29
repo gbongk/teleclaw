@@ -6,14 +6,15 @@ import sys
 # --- config.yaml 로드 ---
 
 _TELECLAW_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# config.yaml 탐색: CWD → 패키지 상위 → 홈 디렉토리
+# config.yaml 탐색: 환경변수 TELECLAW_CONFIG → 패키지 상위 → 홈 디렉토리
 _CONFIG_PATH = ""
+_env_config = os.environ.get("TELECLAW_CONFIG", "")
 for _candidate in [
-    os.path.join(os.getcwd(), "config.yaml"),
+    _env_config,
     os.path.join(_TELECLAW_DIR, "config.yaml"),
     os.path.join(os.path.expanduser("~"), ".teleclaw", "config.yaml"),
 ]:
-    if os.path.exists(_candidate):
+    if _candidate and os.path.exists(_candidate):
         _CONFIG_PATH = _candidate
         break
 if not _CONFIG_PATH:

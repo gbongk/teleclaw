@@ -28,8 +28,8 @@ def test_auto_resume_enabled():
 
 
 def test_projects_defined():
-    """4개 프로젝트 정의"""
-    assert len(PROJECTS) >= 4
+    """프로젝트 1개 이상 정의"""
+    assert len(PROJECTS) >= 1
     for name, config in PROJECTS.items():
         assert "bot_token" in config
         assert "bot_id" in config

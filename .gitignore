@@ -9,3 +9,4 @@ config.yaml
 docs/
 .claude/settings.local.json
 bash.exe.stackdump
+tests/*.md

@@ -996,8 +996,11 @@ class TeleClaw:
                                         display_text = parsed["result"]
                                 except (json.JSONDecodeError, TypeError):
                                     pass
-                                live_lines.append(f"\U0001f4ac {display_text}")
-                                log(f"{state.name}: [result] ai-chat ({len(result_text)}자)")
+                                # ai-chat 결과는 즉시 별도 메시지로 전송 (✅보다 먼저 표시)
+                                mcp_display = f"\U0001f4ac {display_text}"
+                                for mcp_chunk in ch.split(mcp_display):
+                                    await ch.send(mcp_chunk)
+                                log(f"{state.name}: [result] ai-chat ({len(result_text)}자) → 즉시 전송")
                             elif last_tool_name in ("Edit", "Write", "NotebookEdit", "Read", "Grep", "Glob"):
                                 # 코드/파일 관련 결과는 길이만 표시
                                 if tool_lines:

@@ -5,7 +5,7 @@ import sys
 import json
 import time
 
-from .config import LOG_FILE, LOCK_FILE, LOGS_DIR
+from .config import LOG_FILE, LOCK_FILE, LOGS_DIR, _CONFIG_PATH
 
 # --- 로깅 ---
 
@@ -80,7 +80,7 @@ def _find_existing_teleclaw() -> int | None:
 def _write_lock():
     try:
         with open(LOCK_FILE, "w") as f:
-            json.dump({"pid": os.getpid(), "started": time.time()}, f)
+            json.dump({"pid": os.getpid(), "config": _CONFIG_PATH, "started": time.time()}, f)
     except Exception as e:
         print(f"[logging] lock 파일 쓰기 실패: {e}", file=sys.stderr, flush=True)
 
