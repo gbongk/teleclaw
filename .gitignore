@@ -6,6 +6,7 @@ build/
 logs/
 data/
 config.yaml
+config_test.yaml
 docs/
 .claude/settings.local.json
 bash.exe.stackdump
