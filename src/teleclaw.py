@@ -12,28 +12,17 @@ import asyncio
 import signal
 import threading
 import httpx
-from pathlib import Path
 
 # Windows cp949 인코딩 문제 방지 — stdout/stderr를 UTF-8로 강제
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from claude_code_sdk import (
-    ClaudeSDKClient, ClaudeCodeOptions,
-    SystemMessage, AssistantMessage, UserMessage, ResultMessage,
+from claude_agent_sdk import (
+    ClaudeSDKClient, ClaudeAgentOptions,
+    AssistantMessage, UserMessage, ResultMessage,
+    HookMatcher,
 )
-from claude_code_sdk.types import StreamEvent
-
-# monkey-patch: 알 수 없는 메시지 타입 (rate_limit_event 등) 무시
-import claude_code_sdk._internal.message_parser as _mp
-_original_parse = _mp.parse_message
-def _patched_parse(data):
-    try:
-        return _original_parse(data)
-    except Exception:
-        return None
-_mp.parse_message = _patched_parse
 
 from .config import (
     PROJECTS, CHAT_ID, ALLOWED_USERS, TELECLAW_DIR, LOGS_DIR, LOG_FILE,
@@ -49,6 +38,83 @@ from .session import SessionState
 from .commands import handle_command, _get_usage
 from .messages import msg
 from . import state_db as db
+from .file_handler import download_photo, download_photo_via_channel, download_doc_via_channel
+from .stream_handler import (
+    StreamContext, tool_summary, format_tool_line, stabilize_markdown,
+    process_stream_message, finalize_response,
+)
+
+
+# --- SDK 스트림 전수 로깅 ---
+
+class _StreamDumper:
+    """SDK 메시지를 JSON Lines 파일에 덤프. 디버깅/테스트용."""
+
+    def __init__(self, session_name: str):
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        self._path = os.path.join(LOGS_DIR, f"stream_dump_{session_name}_{ts}.jsonl")
+        self._f = open(self._path, "a", encoding="utf-8")
+        log(f"{session_name}: stream dump → {self._path}")
+
+    def dump(self, sdk_msg):
+        """SDK 메시지 1건을 JSON Lines로 기록."""
+        try:
+            record = {
+                "timestamp": time.time(),
+                "iso": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "type": type(sdk_msg).__name__,
+                "raw": self._serialize(sdk_msg),
+            }
+            # block 상세 정보 추출
+            blocks = []
+            for block in getattr(sdk_msg, "content", []) or []:
+                b = {"block_type": type(block).__name__}
+                if hasattr(block, "text"):
+                    b["text"] = block.text[:2000] if block.text else ""
+                if hasattr(block, "name"):
+                    b["name"] = block.name
+                if hasattr(block, "input"):
+                    b["input"] = self._safe_json(block.input)
+                if hasattr(block, "content"):
+                    b["content"] = self._safe_json(block.content)
+                if hasattr(block, "thinking"):
+                    b["thinking"] = (block.thinking or "")[:500]
+                if hasattr(block, "tool_use_id"):
+                    b["tool_use_id"] = block.tool_use_id
+                blocks.append(b)
+            if blocks:
+                record["blocks"] = blocks
+            self._f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+            self._f.flush()
+        except Exception as e:
+            log(f"stream_dump error: {e}")
+
+    def _serialize(self, obj) -> dict:
+        """객체를 dict로 직렬화. 직렬화 불가 필드는 str() 변환."""
+        try:
+            d = vars(obj) if hasattr(obj, "__dict__") else {"value": str(obj)}
+        except Exception:
+            return {"value": str(obj)}
+        result = {}
+        for k, v in d.items():
+            result[k] = self._safe_json(v)
+        return result
+
+    @staticmethod
+    def _safe_json(v):
+        """JSON 직렬화 가능하면 그대로, 아니면 str() 변환."""
+        try:
+            json.dumps(v, ensure_ascii=False)
+            return v
+        except (TypeError, ValueError):
+            return str(v)
+
+    def close(self):
+        try:
+            self._f.close()
+        except Exception:
+            pass
 
 
 class TeleClaw:
@@ -138,16 +204,19 @@ class TeleClaw:
 
 
     async def _safe_disconnect(self, client, name: str):
-        """프로세스를 직접 종료. client.disconnect()는 anyio cancel scope 충돌로 CPU 100% 유발하므로 호출하지 않음."""
+        """공식 disconnect() API로 세션 종료."""
         try:
-            transport = getattr(client, "_transport", None)
-            proc = getattr(transport, "_process", None) if transport else None
-            if proc and proc.returncode is None:
-                proc.terminate()
-                log(f"{name}: 프로세스 terminate (pid={proc.pid})")
-            else:
-                log(f"{name}: 프로세스 이미 종료됨")
-        except Exception as kill_err:
+            await client.disconnect()
+            log(f"{name}: disconnect 완료")
+        except Exception as e:
+            log(f"{name}: disconnect 실패 ({e}), 프로세스 직접 종료 시도")
+            try:
+                transport = getattr(client, "_transport", None)
+                proc = getattr(transport, "_process", None) if transport else None
+                if proc and proc.returncode is None:
+                    proc.terminate()
+                    log(f"{name}: 프로세스 terminate (pid={proc.pid})")
+            except Exception as kill_err:
                 log(f"{name}: 프로세스 종료 실패: {kill_err}")
 
     async def _connect_session(self, state: SessionState, mode: str = "resume"):
@@ -165,11 +234,38 @@ class TeleClaw:
                     if k not in exclude and not k.startswith("telegram_")
                 }
 
-            options = ClaudeCodeOptions(
+            # 훅 콜백 정의
+            _ch = state.channel
+            _name = state.name
+
+            async def _on_tool_failure(input, matcher, ctx, ch=_ch, name=_name):
+                try:
+                    tool = input.tool_name
+                    err = input.error[:200] if input.error else "?"
+                    log(f"{name}: [hook] PostToolUseFailure: {tool} — {err}")
+                    await ch.send(msg("hook_tool_failure", name=name, tool=tool, err=err))
+                except Exception as e:
+                    log(f"{name}: [hook] 콜백 에러: {e}")
+                return {}
+
+            async def _on_notification(input, matcher, ctx, ch=_ch, name=_name):
+                try:
+                    log(f"{name}: [hook] Notification: {input.notification_type} — {input.message[:100]}")
+                    await ch.send(msg("notification", name=name, message=input.message[:500]))
+                except Exception as e:
+                    log(f"{name}: [hook] 콜백 에러: {e}")
+                return {}
+
+            options = ClaudeAgentOptions(
                 permission_mode="bypassPermissions",
                 cwd=state.config["cwd"],
                 mcp_servers=mcp_servers,
                 max_turns=50,
+                stderr=lambda line, _name=state.name: log(f"{_name}: [stderr] {line.rstrip()}"),
+                hooks={
+                    "PostToolUseFailure": [HookMatcher(hooks=[_on_tool_failure])],
+                    "Notification": [HookMatcher(hooks=[_on_notification])],
+                },
             )
 
             # reset 모드: 컨텍스트 초기화 (새 대화)
@@ -178,7 +274,7 @@ class TeleClaw:
                 log(f"{state.name}: reset 모드 (새 대화)")
             else:
                 # resume/new 모두 기존 컨텍스트 유지
-                if state.session_id:
+                if state.session_id is not None:
                     options.resume = state.session_id
                     log(f"{state.name}: {mode} 모드 (session_id={state.session_id[:16]}...)")
                 else:
@@ -218,7 +314,7 @@ class TeleClaw:
         if self._ask_client is not None:
             return True
         try:
-            options = ClaudeCodeOptions(
+            options = ClaudeAgentOptions(
                 permission_mode="bypassPermissions",
                 cwd=TELECLAW_DIR,
                 max_turns=5,
@@ -286,7 +382,7 @@ class TeleClaw:
             ch.send_sync(msg("ask_response", answer=answer))
         except Exception as e:
             log(f"ask 처리 실패: {e}")
-            ch.send_sync(msg("ask_error", error=e))
+            ch.send_sync(msg("ask_error", error=str(e)))
             # 세션 초기화
             self._ask_client = None
         finally:
@@ -594,108 +690,12 @@ class TeleClaw:
     def _get_usage(self) -> str:
         return _get_usage(self._http)
 
-    async def _download_photo(self, msg: dict, bot_token: str, name: str) -> str:
-        """텔레그램 이미지를 다운로드하여 로컬 경로 반환."""
-        photos = msg.get("photo", [])
-        if not photos:
-            return ""
-        # 가장 큰 해상도 선택
-        photo = photos[-1]
-        file_id = photo.get("file_id", "")
-        if not file_id:
-            return ""
-        try:
-            # getFile API로 파일 경로 조회
-            url = f"https://api.telegram.org/bot{bot_token}/getFile"
-            r = await self._ahttp.post(url, json={"file_id": file_id}, timeout=10)
-            data = r.json()
-            if not data.get("ok"):
-                log(f"{name}: getFile 실패: {data}")
-                return ""
-            file_path = data["result"]["file_path"]
-            # 다운로드
-            download_url = f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
-            r = await self._ahttp.get(download_url, timeout=30)
-            # 로컬 저장
-            save_dir = os.path.join(LOGS_DIR, "images")
-            os.makedirs(save_dir, exist_ok=True)
-            ext = os.path.splitext(file_path)[1] or ".jpg"
-            save_path = os.path.join(save_dir, f"{name}_{int(time.time())}{ext}")
-            with open(save_path, "wb") as f:
-                f.write(r.content)
-            log(f"{name}: 이미지 다운로드 완료: {save_path}")
-            return save_path
-        except Exception as e:
-            log(f"{name}: 이미지 다운로드 실패: {e}")
-            return ""
-
-    async def _download_photo_via_channel(self, ch, file_id: str, name: str) -> str:
-        """channel.download_file()로 이미지 다운로드하여 로컬 경로 반환."""
-        try:
-            data = await ch.download_file(file_id)
-            if not data:
-                return ""
-            save_dir = os.path.join(LOGS_DIR, "images")
-            os.makedirs(save_dir, exist_ok=True)
-            save_path = os.path.join(save_dir, f"{name}_{int(time.time())}.jpg")
-            with open(save_path, "wb") as f:
-                f.write(data)
-            log(f"{name}: 이미지 다운로드 완료: {save_path}")
-            return save_path
-        except Exception as e:
-            log(f"{name}: 이미지 다운로드 실패: {e}")
-            return ""
-
-    async def _download_doc_via_channel(self, ch, file_id: str, file_name: str, name: str) -> str:
-        """channel.download_file()로 문서 다운로드하여 로컬 경로 반환."""
-        try:
-            data = await ch.download_file(file_id)
-            if not data:
-                return ""
-            save_dir = os.path.join(LOGS_DIR, "files")
-            os.makedirs(save_dir, exist_ok=True)
-            save_path = os.path.join(save_dir, file_name)
-            with open(save_path, "wb") as f:
-                f.write(data)
-            log(f"{name}: 파일 다운로드 완료: {save_path}")
-            return save_path
-        except Exception as e:
-            log(f"{name}: 파일 다운로드 실패: {e}")
-            return ""
-
-    @staticmethod
-    def _tool_summary(tool_name: str, tool_input: dict) -> str:
-        """도구 호출을 짧은 이름으로 요약"""
-        # MCP 도구명 축약 (mcp__ai-chat__ask → ai-chat.ask)
-        short = tool_name
-        if short.startswith("mcp__"):
-            parts = short[5:].split("__", 1)
-            short = ".".join(parts) if len(parts) > 1 else parts[0]
-        path = (tool_input.get("file_path") or tool_input.get("path")
-                or tool_input.get("pattern") or tool_input.get("command", "")[:60])
-        if path:
-            # 긴 경로는 파일명만
-            if len(path) > 40:
-                path = "..." + path[-35:]
-            return f"{short}: {path}"
-        return short
-
-    @staticmethod
-    def _format_tool_line(tool_lines: list) -> str:
-        """도구 호출 목록을 컴팩트한 한 줄로 포맷. 4개 초과 시 축약."""
-        names = [t.replace("\U0001f527 ", "") for t in tool_lines]
-        if len(names) <= 4:
-            return "\u2500 \U0001f527 " + " \u2192 ".join(names)
-        # 4개 초과: 처음 2개 + 마지막 1개 + 생략 표시
-        shown = names[:2] + [f"...+{len(names) - 3}"] + names[-1:]
-        return "\u2500 \U0001f527 " + " \u2192 ".join(shown)
-
-    @staticmethod
-    def _stabilize_markdown(text: str) -> str:
-        """edit 전 미닫힌 코드블록을 임시로 닫아 마크다운 깨짐 방지."""
-        if text.count("```") % 2 == 1:
-            text += "\n```"
-        return text
+    # static 메서드는 stream_handler 모듈로 이동:
+    # tool_summary, format_tool_line, stabilize_markdown
+    # 하위 호환 유지
+    _tool_summary = staticmethod(tool_summary)
+    _format_tool_line = staticmethod(format_tool_line)
+    _stabilize_markdown = staticmethod(stabilize_markdown)
 
     def _should_auto_resume(self, state: SessionState) -> bool:
         """자동 재개 여부를 판단."""
@@ -789,42 +789,26 @@ class TeleClaw:
                 client = state.client
                 if not client:
                     continue
-                # 버퍼 드레인: query() 전에 이전 턴의 잔여 메시지 제거 (N턴 밀림 방지)
-                # NOTE: SDK private 속성(_query, _message_receive)에 직접 접근.
-                # SDK 업데이트 시 깨질 수 있으므로, 버전 업 후 확인 필요.
-                drain_count = 0
-                drain_types = []
-                try:
-                    import anyio
-                    if hasattr(client, '_query') and client._query:
-                        stream = client._query._message_receive
-                        while True:
-                            try:
-                                stale = stream.receive_nowait()
-                                drain_count += 1
-                                msg_type = stale.get("type", "?")
-                                # 주요 내용 요약 (텍스트 블록이면 앞 50자)
-                                preview = ""
-                                if msg_type == "assistant":
-                                    content = stale.get("message", {}).get("content", [])
-                                    for b in content if isinstance(content, list) else []:
-                                        if isinstance(b, dict) and b.get("type") == "text":
-                                            preview = b.get("text", "")[:50]
-                                            break
-                                        elif isinstance(b, dict) and b.get("type") == "tool_use":
-                                            preview = f"tool:{b.get('name', '?')}"
-                                            break
-                                elif msg_type == "result":
-                                    preview = f"session={stale.get('session_id', '?')[:16]}"
-                                drain_types.append(f"{msg_type}({preview})" if preview else msg_type)
-                            except anyio.WouldBlock:
-                                break
-                            except anyio.ClosedResourceError:
-                                break
-                except Exception as e:
-                    log(f"{state.name}: 버퍼 드레인 에러: {e}")
-                if drain_count:
-                    log(f"{state.name}: 버퍼 드레인 {drain_count}건 제거: {drain_types[:10]}")
+                ch = state.channel
+
+                # 경량 드레인: 이전 턴 잔여 메시지 제거 (재시도 시 스킵)
+                is_retry = msg_data.get("retry_empty", 0) > 0 or msg_data.get("retry_resume", 0) > 0
+                if not is_retry:
+                    try:
+                        import anyio
+                        if hasattr(client, '_query') and client._query:
+                            stream = client._query._message_receive
+                            drained = 0
+                            while True:
+                                try:
+                                    stream.receive_nowait()
+                                    drained += 1
+                                except (anyio.WouldBlock, anyio.ClosedResourceError):
+                                    break
+                            if drained:
+                                log(f"{state.name}: 경량 드레인 {drained}건 제거")
+                    except Exception:
+                        pass
 
                 try:
                     await asyncio.wait_for(client.query(text), timeout=10)
@@ -842,258 +826,92 @@ class TeleClaw:
                     state.busy = False
                     continue
 
-                live_msg_id = ""  # 현재 editMessage 대상 (str, channel 인터페이스)
-                live_lines = []  # 현재 메시지에 쌓인 텍스트
-                tool_lines = []  # 도구 호출 임시 버퍼 (텍스트 오면 정리)
-                last_tool_name = ""  # 마지막 도구명 (ToolResult 판별용)
-                msg_count = 0
-                last_edit = 0.0
-                edit_interval = 1.0  # 적응형 edit 간격 (초)
-                query_start = time.time()  # 빠른 응답 감지용
-                consecutive_edit_fails = 0  # 연속 edit 실패 횟수
-                last_progress_notify = 0  # 마지막 중간 알림 시각
-                bot_token = state.config["bot_token"]
-                ch = state.channel
+                ctx = StreamContext()
+                stream_dumper = _StreamDumper(state.name)
 
-                async for sdk_msg in client.receive_messages():
-                    if sdk_msg is None:
-                        continue
-                    # client가 교체되었으면 (재시작) 현재 루프 중단
+                # raw 메시지 로깅 래퍼 — parse_message가 None 반환하는 케이스 감지
+                from claude_agent_sdk._internal.message_parser import parse_message as _sdk_parse
+                async def _logging_receive():
+                    async for raw_data in client._query.receive_messages():
+                        msg = _sdk_parse(raw_data)
+                        if msg is None:
+                            msg_type = raw_data.get("type", "?") if isinstance(raw_data, dict) else "?"
+                            log(f"{state.name}: [sdk-skip] type={msg_type} keys={list(raw_data.keys()) if isinstance(raw_data, dict) else '?'}")
+                        if msg is not None:
+                            yield msg
+                msg_iter = _logging_receive().__aiter__()
+                while True:
+                    # client 교체 감지 (재시작으로 인한 프로세스 종료)
                     if state.client is not client:
                         log(f"{state.name}: client 교체 감지 → receive_messages 중단")
                         break
+                    try:
+                        sdk_msg = await asyncio.wait_for(msg_iter.__anext__(), timeout=30)
+                    except asyncio.TimeoutError:
+                        if state.client is not client:
+                            log(f"{state.name}: 수신 타임아웃 + client 교체 → 루프 중단")
+                            break
+                        continue
+                    except StopAsyncIteration:
+                        # init만 오고 실제 응답 없이 스트림 종료 → 재시도
+                        if ctx.msg_count <= 1 and not ctx.live_lines:
+                            retry = msg_data.get("retry_empty", 0)
+                            if retry < 2:
+                                msg_data["retry_empty"] = retry + 1
+                                log(f"{state.name}: 빈 스트림 → 재시도 ({retry + 1}/2)")
+                                await state.message_queue.put(msg_data)
+                                state.busy = False
+                                break
+                            else:
+                                # 2회 재시도 실패 → resume으로 세션 복구 후 재시도
+                                if msg_data.get("retry_resume", 0) < 1:
+                                    msg_data["retry_resume"] = 1
+                                    msg_data["retry_empty"] = 0
+                                    log(f"{state.name}: 빈 스트림 2회 실패 → resume 후 재시도")
+                                    await self._restart_session(state, "빈 스트림 resume", mode="resume", force=True)
+                                    await state.message_queue.put(msg_data)
+                                    state.busy = False
+                                    break
+                        break
+                    if sdk_msg is None:
+                        continue
+                    stream_dumper.dump(sdk_msg)
                     # 메시지 수신 타임아웃 체크 (10분 무응답 → 강제 중단)
-                    if time.time() - state.busy_since > 600 and msg_count == 0:
+                    if time.time() - state.busy_since > 600 and ctx.msg_count == 0:
                         log(f"{state.name}: 10분간 메시지 없음 → 강제 중단")
                         break
                     # 느린 응답 중간 알림 (2분마다)
                     elapsed = time.time() - state.busy_since
-                    if elapsed > 120 and time.time() - last_progress_notify > 120:
+                    if elapsed > 120 and time.time() - ctx.last_progress_notify > 120:
                         mins = int(elapsed / 60)
-                        await ch.send(msg("still_processing", mins=mins, tools=msg_count))
-                        last_progress_notify = time.time()
-                    msg_count += 1
+                        await ch.send(msg("still_processing", mins=mins, tools=ctx.msg_count))
+                        ctx.last_progress_notify = time.time()
+                    ctx.msg_count += 1
 
-                    if isinstance(sdk_msg, AssistantMessage):
-                        _lvl = self.output_level
-                        for block in sdk_msg.content:
-                            block_type = type(block).__name__
-                            if hasattr(block, "text") and block.text.strip():
-                                # TextBlock — 텍스트 응답 도착하면 도구 요약 정리
-                                if tool_lines:
-                                    live_lines.append(self._format_tool_line(tool_lines))
-                                    tool_lines = []
-                                live_lines.append(block.text)
-                                log(f"{state.name}: [block] TextBlock ({len(block.text)}자)")
-                            elif block_type == "ToolUseBlock":
-                                tool_name = getattr(block, "name", "tool")
-                                tool_input = getattr(block, "input", {})
-                                last_tool_name = tool_name
-                                if _lvl != "minimal":
-                                    summary = self._tool_summary(tool_name, tool_input)
-                                    tool_lines.append(f"\U0001f527 {summary}")
-                                log(f"{state.name}: [block] ToolUse: {self._tool_summary(tool_name, tool_input)}")
-                            elif block_type == "ThinkingBlock":
-                                thinking_text = getattr(block, "thinking", "") or ""
-                                log(f"{state.name}: [block] Thinking ({len(thinking_text)}자)")
-                                continue
-                            else:
-                                log(f"{state.name}: [block] {block_type} (skip)")
-                                continue
-
-                            # 실시간 전송/수정
-                            now = time.time()
-                            display = list(live_lines)
-                            if tool_lines:
-                                display.append(self._format_tool_line(tool_lines))
-                            content = "\n".join(display)
-
-                            # 새 메시지 분리 기준: 10초+ 간격 또는 2000자 초과
-                            need_new_msg = (
-                                live_msg_id and (
-                                    now - last_edit >= 10.0 or
-                                    len(content) > 2000
-                                )
-                            )
-                            if need_new_msg and len(live_lines) > 1:
-                                # 기존 메시지 마무리 후 새 메시지 시작 (2줄 이상일 때만)
-                                prev = "\n".join(live_lines[:-1])
-                                await ch.edit(live_msg_id, prev)
-                                new_start = live_lines[-1]
-                                live_msg_id = await ch.send(new_start)
-                                live_lines = [new_start]
-                                tool_lines = []
-                                last_edit = now
-                            elif not live_msg_id:
-                                # 첫 메시지: 3초 버퍼링 — 빠른 응답은 edit 없이 최종 send로
-                                elapsed_since_start = now - query_start
-                                if elapsed_since_start >= 3.0:
-                                    live_msg_id = await ch.send(content)
-                                    last_edit = now
-                                # 3초 미만이면 전송 보류 (최종 전송에서 한 번에)
-                            elif now - last_edit >= edit_interval:
-                                # 4096자 한도 대비 여유 (prefix + 마진)
-                                max_len = 4096 - len(f"[{state.name}] ") - 50
-                                stable_content = ch.format(content)
-                                if len(content) > max_len:
-                                    prev = "\n".join(live_lines[:-1]) if len(live_lines) > 1 else "\n".join(live_lines)
-                                    await ch.edit(live_msg_id, ch.format(prev), use_markup=True)
-                                    new_start = live_lines[-1] if live_lines else ""
-                                    live_msg_id = await ch.send(new_start)
-                                    live_lines = [new_start] if new_start else []
-                                    tool_lines = []
-                                else:
-                                    ok = await ch.edit(live_msg_id, stable_content, use_markup=True)
-                                    if not ok:
-                                        consecutive_edit_fails += 1
-                                        if consecutive_edit_fails >= 3:
-                                            # rate limit 대응: 간격 증가
-                                            edit_interval = min(edit_interval * 2, 5.0)
-                                            consecutive_edit_fails = 0
-                                        live_msg_id = await ch.send(stable_content, use_markup=True)
-                                    else:
-                                        consecutive_edit_fails = 0
-                                        # 성공 시 간격 점진 복원
-                                        if edit_interval > 1.0:
-                                            edit_interval = max(edit_interval - 0.5, 1.0)
-                                last_edit = now
-
-                    elif isinstance(sdk_msg, UserMessage):
-                        # ToolResult 처리 — ai-chat 결과는 전문, 나머지는 요약
-                        result_text = ""
-                        for block in sdk_msg.content:
-                            bt = type(block).__name__
-                            if hasattr(block, "text") and block.text:
-                                result_text = block.text.strip()
-                                log(f"{state.name}: [user-block] {bt} ({len(result_text)}자)")
-                                break
-                            elif hasattr(block, "content") and isinstance(block.content, str):
-                                result_text = block.content.strip()
-                                log(f"{state.name}: [user-block] {bt} ({len(result_text)}자)")
-                                break
-                            else:
-                                log(f"{state.name}: [user-block] {bt} (skip)")
-                        if result_text:
-                            is_ai_chat = last_tool_name.startswith("mcp__ai_chat__") or last_tool_name.startswith("mcp__ai-chat__")
-                            if is_ai_chat:
-                                # ai-chat 결과는 별도 새 메시지로 분리
-                                if live_msg_id:
-                                    # live_lines가 비어있어도 tool_lines로 이전 메시지 마무리
-                                    prev_content = "\n".join(live_lines) if live_lines else ""
-                                    if tool_lines:
-                                        tl = self._format_tool_line(tool_lines)
-                                        prev_content = f"{prev_content}\n{tl}" if prev_content else tl
-                                    if prev_content:
-                                        await ch.edit(live_msg_id, prev_content)
-                                    tool_lines = []
-                                    live_lines = []
-                                    live_msg_id = ""
-                                # JSON {"result":"..."} 파싱
-                                display_text = result_text
-                                try:
-                                    parsed = json.loads(result_text)
-                                    if isinstance(parsed, dict) and "result" in parsed:
-                                        display_text = parsed["result"]
-                                except (json.JSONDecodeError, TypeError):
+                    done = await process_stream_message(
+                        sdk_msg, state, ch, ctx,
+                        output_level=self.output_level,
+                        save_session_ids_fn=self._save_session_ids,
+                    )
+                    if done:
+                        # ResultMessage 수신 → end까지 잔여 메시지 소비 (N턴 밀림 방지)
+                        try:
+                            async def _drain_end():
+                                async for _ in msg_iter:
                                     pass
-                                live_lines.append(f"\U0001f4ac {display_text}")
-                                log(f"{state.name}: [result] ai-chat ({len(result_text)}자)")
-                            elif last_tool_name in ("Edit", "Write", "NotebookEdit", "Read", "Grep", "Glob"):
-                                # 코드/파일 관련 결과는 길이만 표시
-                                if tool_lines:
-                                    tool_lines[-1] += f" ({len(result_text)}자)"
-                                log(f"{state.name}: [result] {last_tool_name} ({len(result_text)}자)")
-                            elif len(result_text) <= 500:
-                                if tool_lines:
-                                    live_lines.append(self._format_tool_line(tool_lines))
-                                    tool_lines = []
-                                live_lines.append(result_text)
-                                log(f"{state.name}: [result] short ({len(result_text)}자)")
-                            else:
-                                if tool_lines:
-                                    tool_lines[-1] += f" ({len(result_text)}자)"
-                                log(f"{state.name}: [result] long ({len(result_text)}자)")
-
-                            # 실시간 업데이트
-                            now = time.time()
-                            display = list(live_lines)
-                            if tool_lines:
-                                display.append(self._format_tool_line(tool_lines))
-                            content = "\n".join(display)
-                            if not live_msg_id:
-                                live_msg_id = await ch.send(ch.format(content), use_markup=True)
-                                last_edit = now
-                            elif now - last_edit >= edit_interval:
-                                stable_content = ch.format(content)
-                                ok = await ch.edit(live_msg_id, stable_content, use_markup=True)
-                                if not ok:
-                                    consecutive_edit_fails += 1
-                                    if consecutive_edit_fails >= 3:
-                                        edit_interval = min(edit_interval * 2, 5.0)
-                                        consecutive_edit_fails = 0
-                                    live_msg_id = await ch.send(stable_content, use_markup=True)
-                                else:
-                                    consecutive_edit_fails = 0
-                                    if edit_interval > 1.0:
-                                        edit_interval = max(edit_interval - 0.5, 1.0)
-                                last_edit = now
-
-                    elif isinstance(sdk_msg, ResultMessage):
-                        if hasattr(sdk_msg, "session_id") and sdk_msg.session_id:
-                            state.session_id = sdk_msg.session_id
-                            self._save_session_ids()
-                        if sdk_msg.usage:
-                            log(f"{state.name}: [usage] {sdk_msg.usage}")
-                        # 라이브 스트리밍이 비었으면 ResultMessage.result로 폴백
-                        if not live_lines and sdk_msg.result:
-                            result_text = sdk_msg.result.strip()
-                            if result_text:
-                                live_lines.append(result_text)
-                                log(f"{state.name}: [result-fallback] {len(result_text)}자")
-                        if hasattr(sdk_msg, "total_cost_usd") and sdk_msg.total_cost_usd:
-                            log(f"{state.name}: [cost] ${sdk_msg.total_cost_usd:.4f}")
+                            await asyncio.wait_for(_drain_end(), timeout=0.5)
+                        except (asyncio.TimeoutError, Exception):
+                            pass
                         break
 
-                    elif isinstance(sdk_msg, SystemMessage):
-                        subtype = getattr(sdk_msg, "subtype", "?")
-                        log(f"{state.name}: [system] subtype={subtype}")
-
-                    elif isinstance(sdk_msg, StreamEvent):
-                        event = getattr(sdk_msg, "event", "?")
-                        log(f"{state.name}: [stream] event={event}")
-
-                # 최종 업데이트 (HTML 변환 적용)
-                if tool_lines:
-                    live_lines.append(self._format_tool_line(tool_lines))
-                if live_lines:
-                    content = "\n".join(live_lines)
-                    # plain text에서 분할 후 각 청크별 HTML 변환 (태그 절단 방지)
-                    chunks = [ch.format(c) for c in ch.split(content)]
-                    elapsed = time.time() - query_start
-                    # 빠른 응답(3초 이내): editMessage 대신 새 메시지로 전송
-                    # → editMessage 지연으로 인한 "답변 밀림" 방지
-                    if live_msg_id and elapsed >= 3.0:
-                        ok = await ch.edit(live_msg_id, chunks[0], use_markup=True)
-                        if not ok:
-                            await ch.edit(live_msg_id, ch.split(content)[0])
-                        for chunk in chunks[1:]:
-                            await ch.send(chunk, use_markup=True)
-                    else:
-                        # 빠른 응답이거나 live_msg_id 없음: 새 메시지로 전송
-                        if live_msg_id:
-                            # 기존 live 메시지 삭제 (중복 방지)
-                            await ch.delete(live_msg_id)
-                        for chunk in chunks:
-                            await ch.send(chunk, use_markup=True)
-                    log(f"{state.name}: 최종 전송 ({len(content)}자, {len(chunks)}청크, {elapsed:.1f}s)")
-                else:
-                    log(f"{state.name}: 빈 응답")
-                    await ch.send(msg("empty_response"))
+                # 최종 전송
+                await finalize_response(state, ch, ctx)
 
                 log(f"{state.name}: 처리 완료")
 
                 # 처리 완료 알림 (새 메시지, 알림 옴)
-                asyncio.create_task(ch.send(ICON_DONE))
+                # await로 순서 보장: MCP 결과(💬) → finalize → ✅ 순서
+                await ch.send(ICON_DONE)
 
                 # 처리 완료 후 offset 확정 (재시작 시 미처리 메시지 재수신 보장)
                 processed_update_id = msg_data.get("update_id", 0)
@@ -1201,7 +1019,7 @@ class TeleClaw:
                     if not text and files:
                         for f_info in files:
                             if f_info.get("type") == "photo":
-                                photo_path = await self._download_photo_via_channel(ch, f_info["file_id"], name)
+                                photo_path = await download_photo_via_channel(ch, f_info["file_id"], name)
                                 if photo_path:
                                     caption = raw.get("caption", "") if raw else ""
                                     text = f"이 이미지를 확인해줘: {photo_path}"
@@ -1213,7 +1031,7 @@ class TeleClaw:
                                 file_name = f_info.get("name", "unknown")
                                 caption = raw.get("caption", "") if raw else ""
                                 if file_id:
-                                    doc_path = await self._download_doc_via_channel(ch, file_id, file_name, name)
+                                    doc_path = await download_doc_via_channel(ch, file_id, file_name, name)
                                     if doc_path:
                                         text = f"이 파일을 확인해줘: {doc_path}"
                                         if caption:
@@ -1229,7 +1047,11 @@ class TeleClaw:
 
                     sender = raw.get("from", {}).get("first_name", "") if raw else ""
                     edit_tag = " [수정]" if is_edited else ""
-                    full_text = f"{sender}{edit_tag}: {text}"
+                    # /로 시작하는 슬래시 명령은 프리픽스 없이 전달 (Claude Code 내장 명령 호환)
+                    if text.startswith("/"):
+                        full_text = text
+                    else:
+                        full_text = f"{sender}{edit_tag}: {text}"
 
                     # 중복 메시지 제거 (message_id 기반)
                     msg_key = f"{name}_{msg_id}"
@@ -1267,8 +1089,10 @@ class TeleClaw:
                     if state.busy:
                         qsize = state.message_queue.qsize() + 1
                         await ch.send(msg("ack_busy", icon=ICON_THINKING, qsize=qsize))
+                        log(f"{name}: 수신 확인 전송 (대기 {qsize}건)")
                     else:
                         await ch.send(ICON_THINKING)
+                        log(f"{name}: 수신 확인 전송")
 
                     # update_id 추적 (channel.poll이 offset 자동 관리하므로 현재 offset - 1)
                     update_id = ch.get_offset() - 1

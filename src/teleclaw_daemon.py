@@ -20,7 +20,7 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-TELECLAW_DIR = os.path.dirname(os.path.dirname(__file__))  # D:/workspace/supervisor/
+TELECLAW_DIR = os.path.dirname(os.path.dirname(__file__))  # D:/workspace/teleclaw/
 PYTHON = sys.executable
 LOGS_DIR = os.path.join(TELECLAW_DIR, "logs")
 LOG_FILE = os.path.join(LOGS_DIR, "wrapper.log")

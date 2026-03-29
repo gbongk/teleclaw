@@ -5,7 +5,9 @@
     msg("restart_done", name="Converter")  # → "[TC] Converter: 재시작 완료, ..."
 """
 
-from .config import LANG
+from .config import LANG, _cfg
+
+_TC_PREFIX = _cfg.get("prefix", "TC")
 
 _MESSAGES = {
     # --- TeleClaw 상태 ---
@@ -521,15 +523,41 @@ _MESSAGES = {
         "ko": "[TC] 현재 모드: {mode} ({options})",
         "en": "[TC] Current mode: {mode} ({options})",
     },
+    "hook_tool_failure": {
+        "ko": "\u274c {name}: {tool} 실패\n{err}",
+        "en": "\u274c {name}: {tool} failed\n{err}",
+    },
+    "agent_progress": {
+        "ko": "\U0001f916 {description}\n{prompt}\n\u23f3 진행 중... (도구 {tool_count}회, {last_tool})",
+        "en": "\U0001f916 {description}\n{prompt}\n\u23f3 In progress... ({tool_count} tool calls, {last_tool})",
+    },
+    "agent_waiting": {
+        "ko": "\U0001f916 {description}\n{prompt}\n\u23f3 결과 대기 중...",
+        "en": "\U0001f916 {description}\n{prompt}\n\u23f3 Waiting for result...",
+    },
+    "agent_result": {
+        "ko": "\U0001f916 {description}\n{prompt}\n{preview}\n{icon}",
+        "en": "\U0001f916 {description}\n{prompt}\n{preview}\n{icon}",
+    },
+    "api_retry_notify": {
+        "ko": "\u23f3 API 재시도 중...",
+        "en": "\u23f3 API retrying...",
+    },
+    "notification": {
+        "ko": "\U0001f514 {name}: {message}",
+        "en": "\U0001f514 {name}: {message}",
+    },
 }
 
 
 def msg(key: str, **kwargs) -> str:
-    """메시지 키로 현재 언어의 텍스트를 반환한다. kwargs로 포맷팅."""
+    """메시지 키로 현재 언어의 텍스트를 반환한다. kwargs로 포맷팅. [TC] → config prefix."""
     entry = _MESSAGES.get(key)
     if not entry:
         return key
     text = entry.get(LANG, entry.get("en", key))
+    if "[TC]" in text:
+        text = text.replace("[TC]", f"[{_TC_PREFIX}]")
     if kwargs:
         try:
             return text.format(**kwargs)

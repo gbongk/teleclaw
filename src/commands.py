@@ -56,7 +56,7 @@ def _get_usage(http_client) -> str:
         creds = json.loads(cred_path.read_text(encoding="utf-8"))
         token = creds["claudeAiOauth"]["accessToken"]
     except Exception as e:
-        return msg("usage_fail_cred", error=e)
+        return msg("usage_fail_cred", error=str(e))
 
     # API 호출
     try:

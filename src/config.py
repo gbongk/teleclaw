@@ -6,14 +6,15 @@ import sys
 # --- config.yaml 로드 ---
 
 _TELECLAW_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# config.yaml 탐색: CWD → 패키지 상위 → 홈 디렉토리
+# config.yaml 탐색: 환경변수 TELECLAW_CONFIG → 패키지 상위 → 홈 디렉토리
 _CONFIG_PATH = ""
+_env_config = os.environ.get("TELECLAW_CONFIG", "")
 for _candidate in [
-    os.path.join(os.getcwd(), "config.yaml"),
+    _env_config,
     os.path.join(_TELECLAW_DIR, "config.yaml"),
     os.path.join(os.path.expanduser("~"), ".teleclaw", "config.yaml"),
 ]:
-    if os.path.exists(_candidate):
+    if _candidate and os.path.exists(_candidate):
         _CONFIG_PATH = _candidate
         break
 if not _CONFIG_PATH:
@@ -81,11 +82,18 @@ LANG = _cfg.get("lang", "en")
 
 # 알림 아이콘 (커스터마이즈 가능)
 _icons = _cfg.get("icons", {})
-ICON_THINKING = _icons.get("thinking", "💭...") if isinstance(_icons, dict) else "💭..."
+ICON_THINKING = _icons.get("thinking", "💭..") if isinstance(_icons, dict) else "💭.."
 ICON_DONE = _icons.get("done", "✓") if isinstance(_icons, dict) else "✓"
 
 # 출력 레벨: minimal / normal / verbose
 OUTPUT_LEVEL = _cfg.get("output_level", "normal")
+
+# 결과 풀텍스트 표시 도구 (fnmatch 패턴 지원: * ? [])
+VERBOSE_TOOLS = _cfg.get("verbose_tools", [])
+
+def is_verbose_tool(name: str) -> bool:
+    from fnmatch import fnmatch
+    return any(fnmatch(name, p) for p in VERBOSE_TOOLS)
 
 # 허용된 사용자 ID 목록 (비어있으면 CHAT_ID만 허용)
 _allowed_raw = _cfg.get("allowed_users", "")
@@ -107,7 +115,7 @@ for name, info in _cfg.get("projects", {}).items():
 
 # config.yaml 위치 기준으로 디렉토리 설정 (pip install 환경 대응)
 TELECLAW_DIR = os.path.dirname(_CONFIG_PATH) if _CONFIG_PATH else _TELECLAW_DIR
-LOGS_DIR = os.path.join(TELECLAW_DIR, "logs")
+LOGS_DIR = os.path.join(TELECLAW_DIR, _cfg.get("log_dir", "logs"))
 LOG_FILE = os.path.join(LOGS_DIR, "teleclaw.log")
 LOCK_FILE = os.path.join(LOGS_DIR, "teleclaw.lock")
 STATUS_FILE = os.path.join(LOGS_DIR, "teleclaw_status.json")

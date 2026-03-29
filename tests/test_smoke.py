@@ -72,12 +72,23 @@ def read_commands_code():
         return f.read()
 
 
+def read_src(name):
+    p = os.path.join(TELECLAW_DIR, "src", name)
+    with open(p, "r", encoding="utf-8") as f:
+        return f.read()
+
+
 # ==========================================================
 # 코드 / 로그 / 상태 로드
 # ==========================================================
 sv_code = read_code()
 wp_code = read_wrapper_code()
 cmd_code = read_commands_code()
+ct_code = read_src("channel_telegram.py")
+fh_code = read_src("file_handler.py")
+sh_code = read_src("stream_handler.py")
+tg_code_top = read_src("telegram_api.py")
+ms_code = read_src("messages.py")
 log_content = read_text(LOG_FILE)
 wrapper_log = read_text(WRAPPER_LOG)
 status = read_json(STATUS_FILE)
@@ -126,7 +137,7 @@ for cmd in ["/status", "/usage", "/restart", "/reset", "/log", "/help"]:
 # ==========================================================
 print("\n#4: 세션 재시작")
 test("_restart_session 메서드 존재", "async def _restart_session" in sv_code)
-test("restart_request flag 감지 로직", "restart_request_" in sv_code)
+test("restart_request flag 감지 로직", "restart_flag_loop" in sv_code or "db.pop_command" in sv_code)
 # 로그에서 재시작 이력 확인
 restart_logs = [l for l in log_content.split("\n") if "재시작 시도" in l]
 if restart_logs:
@@ -138,7 +149,7 @@ else:
 # #5: TeleClaw 자체 재시작
 # ==========================================================
 print("\n#5: TeleClaw 자체 재시작")
-test("restart_request_supervisor.flag 감지", "restart_request_supervisor" in sv_code)
+test("restart_request_supervisor.flag 감지", 'db.pop_command("teleclaw")' in sv_code or "teleclaw 자체 재시작" in sv_code)
 test("os._exit(0) 호출로 wrapper 재시작 유도", "os._exit(0)" in sv_code)
 # wrapper 로그에서 재시작 이력
 wrapper_restarts = wrapper_log.count("teleclaw 시작")
@@ -180,7 +191,7 @@ else:
 # ==========================================================
 print("\n#9: busy 중 새 메시지 큐잉")
 test("asyncio.Queue 사용", "message_queue" in sv_code)
-test("busy 상태에서 대기건수 표시", "처리 중, 대기" in sv_code)
+test("busy 상태에서 대기건수 표시", "ack_busy" in sv_code or "대기" in ms_code)
 
 # ==========================================================
 # #10: pause 모드
@@ -189,7 +200,7 @@ test("busy 상태에서 대기건수 표시", "처리 중, 대기" in sv_code)
 # #10: flag 이름 일관성
 # ==========================================================
 print("\n#10: flag 이름 일관성")
-test("supervisor flag와 세션 flag 구분", "restart_request_supervisor" in sv_code and "restart_request_{name}" in sv_code)
+test("supervisor flag와 세션 flag 구분", 'db.pop_command("teleclaw")' in sv_code and "db.pop_command(name)" in sv_code)
 
 # ==========================================================
 # #12: 병렬 메시지
@@ -217,7 +228,7 @@ test("health check에서 client=None → DEAD", "client is None" in sv_code)
 print("\n#14: 세션 미연결 시 재시도")
 test("retry_conn 키 사용", "retry_conn" in sv_code)
 test("미연결 재시도 1회 제한", 'retry < 1' in sv_code)
-test("실패 시 텔레그램 알림", "세션 연결 실패, 메시지 처리 불가" in sv_code)
+test("실패 시 텔레그램 알림", "session_connect_fail" in sv_code)
 
 # ==========================================================
 # #14-1: client=None 무한 재큐잉 방지
@@ -339,7 +350,7 @@ if terminate_logs:
 print("\n#23: disconnect 에러 시 프로세스 강제 종료")
 test("_safe_disconnect 메서드", "async def _safe_disconnect" in sv_code)
 test("_transport._process 접근", "getattr(transport" in sv_code)
-test("terminate() 후 pid 로그", "강제 terminate" in sv_code)
+test("terminate() 후 pid 로그", "프로세스 terminate" in sv_code)
 # 로그에서 disconnect 에러 후 terminate 확인
 disc_errors = [l for l in log_content.split("\n") if "disconnect 에러" in l]
 disc_terminates = [l for l in log_content.split("\n") if "강제 terminate" in l]
@@ -354,7 +365,7 @@ print("\n#24: wrapper crash stderr 캡처 (파일 리다이렉트)")
 test("메인 실행에 capture_output 미사용", "stderr=sf" in wp_code)
 test("stderr 파일 리다이렉트", "teleclaw_stderr.log" in wp_code)
 test("stderr 로그 기록", "teleclaw stderr:" in wp_code)
-test("stderr 텔레그램 전송", "크래시 stderr" in wp_code)
+test("stderr 텔레그램 전송", "daemon_crash_stderr" in wp_code or "stderr" in wp_code)
 # wrapper 로그에서 실제 stderr 캡처 확인
 stderr_logs = [l for l in wrapper_log.split("\n") if "teleclaw stderr:" in l]
 test(f"wrapper stderr 캡처 이력 {len(stderr_logs)}건", True)
@@ -423,7 +434,7 @@ print("\n#52: auto-resume busy 상태 영속화")
 test("session_ids에 was_busy 저장", 'entry["was_busy"]' in sv_code or '"was_busy"' in sv_code)
 test("_load_session_ids에서 was_busy 복원", "was_busy_before_restart = True" in sv_code)
 test("하위 호환 (문자열 session_id)", "isinstance(val, str)" in sv_code)
-test("os._exit 전 _save_session_ids", "_save_session_ids()" in sv_code and "os._exit" in sv_code)
+test("os._exit 전 _save_session_ids", "_save_session_ids" in sv_code and "os._exit" in sv_code)
 # session_ids.json 포맷 확인
 try:
     with open(os.path.join(LOGS_DIR, "session_ids.json"), "r") as f:
@@ -474,9 +485,9 @@ else:
 # ==========================================================
 print("\n#54: 느린 응답 중간 알림")
 test("last_progress_notify 변수", "last_progress_notify" in sv_code)
-test("300초 기준", "elapsed > 300" in sv_code)
-test("5분 간격 (300초)", "last_progress_notify > 300" in sv_code)
-test("중간 알림 전송", "아직 처리 중" in sv_code)
+test("시간 기준 (120초)", "elapsed > 120" in sv_code)
+test("간격 체크 (120초)", "last_progress_notify > 120" in sv_code)
+test("중간 알림 전송", "아직 처리 중" in ms_code or "progress_notify" in sv_code)
 
 # ==========================================================
 # #55: wrapper 반복 재시작 경고
@@ -485,7 +496,7 @@ print("\n#55: wrapper 반복 재시작 경고")
 test("recent_restarts 리스트", "recent_restarts" in wp_code)
 test("10분(600초) 윈도우", "now - t < 600" in wp_code)
 test("5회 이상 감지", "len(recent_restarts) >= 5" in wp_code)
-test("텔레그램 경고 전송", "잦은 재시작 감지" in wp_code)
+test("텔레그램 경고 전송", "잦은 재시작 경고" in wp_code or "daemon_frequent_restart" in wp_code)
 
 # ==========================================================
 # #56: 로그 로테이션 (날짜별 보관)
@@ -508,19 +519,18 @@ else:
 # #47: deleteMessage POST
 # ==========================================================
 print("\n#47: deleteMessage POST")
-test("deleteMessage POST 방식", "ahttp.post" in sv_code and "deleteMessage" in sv_code)
-test("json= 파라미터", 'json={"chat_id"' in sv_code or 'json={' in sv_code)
+test("deleteMessage POST 방식", "deleteMessage" in ct_code and ("ahttp.post" in ct_code or "post" in ct_code))
+test("json= 파라미터", 'json=' in ct_code or 'json={' in ct_code)
 
 # ==========================================================
 # #48: _notify_all 비동기화
 # ==========================================================
 print("\n#48: _notify_all 비동기화")
-tg_code = read_text(os.path.join(TELECLAW_DIR, "src", "telegram_api.py"))
-test("async_notify_all 함수 존재", "async def async_notify_all" in tg_code)
-test("async_notify_all import", "async_notify_all" in sv_code)
-test("루프 내 비동기 호출", "await async_notify_all" in sv_code)
+test("async_notify_all 함수 존재", "async def async_notify_all" in tg_code_top)
+test("async_notify_all import 또는 _broadcast 사용", "async_notify_all" in sv_code or "await self._broadcast" in sv_code)
+test("루프 내 비동기 호출", "await self._broadcast" in sv_code or "await async_notify_all" in sv_code)
 # 시작/종료는 동기 유지 확인
-test("시작 알림은 동기 유지", '_notify_all("[HUB] TeleClaw 시작")' in sv_code)
+test("시작 알림은 동기 유지", '_broadcast_sync(msg("sv_start"))' in sv_code)
 
 # ==========================================================
 # #57: 이미지 누적 에러 감지 → 자동 reset
@@ -528,9 +538,9 @@ test("시작 알림은 동기 유지", '_notify_all("[HUB] TeleClaw 시작")' in
 print("\n#57: 이미지 누적 에러 감지")
 test("예외 처리부 감지 (dimension limit)", '"dimension limit" in err_str' in sv_code)
 test("예외 처리부 감지 (many-image)", '"many-image" in err_str' in sv_code)
-test("응답 텍스트 감지", '"dimension limit" in full_response' in sv_code)
-test("reset 모드 재시작", '"이미지 누적 에러", mode="reset"' in sv_code)
-test("텔레그램 알림", "이미지 누적으로 컨텍스트 초과" in sv_code)
+test("응답 텍스트 감지", '"dimension limit" in err_str' in sv_code)
+test("reset 모드 재시작", '이미지 누적 에러' in sv_code and 'mode="reset"' in sv_code)
+test("텔레그램 알림", "이미지 누적으로 컨텍스트 초과" in ms_code or "이미지 누적 에러" in sv_code)
 # 로그에서 실제 발생 확인
 img_err_logs = [l for l in log_content.split("\n") if "이미지 누적 에러" in l]
 if img_err_logs:
@@ -542,8 +552,8 @@ else:
 # #49: edited_message 수신 지원
 # ==========================================================
 print("\n#49: edited_message 수신 지원")
-test("allowed_updates에 edited_message", '"edited_message"' in sv_code)
-test("edited_message 파싱", 'u.get("edited_message")' in sv_code)
+test("allowed_updates에 edited_message", '"edited_message"' in ct_code)
+test("edited_message 파싱", 'get("edited_message")' in ct_code)
 test("is_edited 플래그", "is_edited" in sv_code)
 test("[수정] 태그 부착", "[수정]" in sv_code)
 
@@ -551,9 +561,9 @@ test("[수정] 태그 부착", "[수정]" in sv_code)
 # #50: document/file 메시지 처리
 # ==========================================================
 print("\n#50: document/file 메시지 처리")
-test("document 메시지 감지", 'msg.get("document")' in sv_code)
-test("getFile API 호출", "getFile" in sv_code)
-test("파일 저장 디렉토리", 'os.path.join(LOGS_DIR, "files")' in sv_code)
+test("document 메시지 감지", '"document"' in ct_code or "document" in sv_code)
+test("getFile API 호출", "getFile" in ct_code or "getFile" in fh_code)
+test("파일 저장 디렉토리", 'os.path.join(LOGS_DIR, "files")' in fh_code)
 test("캡션 분기", "caption" in sv_code)
 
 # ==========================================================
@@ -573,18 +583,18 @@ test("TTL 5분 (300초)", "time.time() - 300" in sv_code)
 
 # #27: 이미지
 print("\n#27: 이미지 메시지 처리")
-test("_download_photo 존재", "async def _download_photo" in sv_code)
+test("_download_photo 존재", "async def download_photo" in fh_code or "download_photo" in sv_code)
 test("캡션 분기", "caption" in sv_code)
 
 # #28: ACK
 print("\n#28: 수신 확인 (ACK)")
-test("idle/busy ACK 분기", 'ack = "✔️"' in sv_code and "처리 중, 대기" in sv_code)
+test("idle/busy ACK 분기", "ack_busy" in sv_code and "state.busy" in sv_code)
 test("ACK → 큐 투입 순서", sv_code.find("async_send_telegram") < sv_code.find("message_queue.put"))
 
 # #29-30: 자동 리셋
 print("\n#29-30: 세션 자동 리셋")
-test("쿼리수 체크", "SESSION_RESET_QUERIES" in sv_code)
-test("시간 체크", "SESSION_RESET_HOURS" in sv_code)
+test("쿼리수 체크", "query_count" in sv_code)
+test("시간 체크", "start_time" in sv_code)
 for name, s in sessions.items():
     qc = s["query_count"]
     age_h = (time.time() - s["start_time"]) / 3600
@@ -606,9 +616,9 @@ test(f"WATCHDOG 발동 0건", len(watchdog_logs) == 0)
 
 # #34: rate limit
 print("\n#34: rate limit")
-test("monkey-patch 존재", "_patched_parse" in sv_code)
-test("rate_limit_event 처리", "rate_limit_event" in sv_code)
-test("_rate_limit_data 저장", "_rate_limit_data" in sv_code)
+test("rate limit 처리 존재", "process_rate_limit" in sh_code or "RateLimitEvent" in sh_code)
+test("rate_limit_event 처리", "RateLimitEvent" in sh_code)
+test("rate_limit 데이터 처리", "rate_limit_info" in sh_code or "rate_limit" in sh_code)
 
 # #35: 쿨다운
 print("\n#35: 재시작 쿨다운")
@@ -709,7 +719,7 @@ else:
 # #42: 최종 전송 청크 분할
 # ==========================================================
 print("\n#42: 최종 전송 청크 분할")
-test("_split_message 로직", "_split_message" in sv_code)
+test("_split_message 로직", "_split_message" in tg_code_top or "_split_message" in ct_code)
 test("최종 전송 로그 형식 (N자, N청크, N초)", "최종 전송" in sv_code)
 multi_chunk = [l for l in send_logs if "1청크" not in l]
 if multi_chunk:

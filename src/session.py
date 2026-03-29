@@ -3,7 +3,7 @@
 import asyncio
 from dataclasses import dataclass, field
 
-from claude_code_sdk import ClaudeSDKClient
+from claude_agent_sdk import ClaudeSDKClient
 
 
 @dataclass
@@ -28,3 +28,5 @@ class SessionState:
     last_restart_mode: str = ""  # 마지막 재시작 모드 (resume/reset/crash)
     was_busy_before_restart: bool = False  # 재시작 전 busy 상태였는지
     no_resume_before_restart: bool = False  # TeleClaw/flag 재시작 시 auto-resume 루프 방지
+    _active_agents: dict = field(default_factory=dict)  # task_id → {"description", "msg_id", ...}
+    _completed_agents: dict = field(default_factory=dict)  # task_id → {"msg_id", "description", ...}
